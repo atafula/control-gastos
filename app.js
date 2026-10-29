@@ -216,7 +216,7 @@ $("exportBtn").onclick=()=>{
 };
 $("csvBtn").onclick=()=>{
   const rows=[["fecha","concepto","categoria","importe"],...gastos.map(g=>[g.fecha,g.concepto,g.categoria,String(g.importe).replace(".",",")])];
-  const csv="\ufeff"+rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(";")).join("\n");
+  const csv="﻿"+rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(";")).join("\n");
   const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download=`gastos-${todayISO()}.csv`;
   document.body.appendChild(a);a.click();a.remove();
 };
@@ -316,7 +316,7 @@ if(auth){
   render();
   $("loadingScreen").hidden=true;$("status").textContent="";
   setAuthUI(false);
-  let unsub=null;
+  let unsub=null,listening=false,retryT=null,retryDelay=3000;
   auth.onAuthStateChanged(user=>{
     if(user){
       setAuthUI(true);
@@ -325,9 +325,25 @@ if(auth){
       if(prevUid&&prevUid!==user.uid){clearLocalData();gastos=[];render()}
       localStorage.setItem(UID_KEY,user.uid);
       col=db.collection("users").doc(user.uid).collection("gastos");
-      if(unsub)unsub();
       $("status").textContent="";
+      listen(user);
+    }else{
+      setAuthUI(false);
+      stopListen();
+      col=null;
+      // No borrar datos locales al cerrar sesión — seguir en modo local
+    }
+  });
+  // Reconectar al volver a la app o recuperar conexión
+  const revive=()=>{const u=auth.currentUser;if(u&&!listening)listen(u)};
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")revive()});
+  window.addEventListener("online",revive);
+  function stopListen(){if(unsub){unsub();unsub=null}listening=false;clearTimeout(retryT)}
+  function listen(user){
+      stopListen();
+      listening=true;
       unsub=col.onSnapshot(snap=>{
+        retryDelay=3000;
         const serverIds=new Set(snap.docs.map(d=>d.id));
         const deleted=loadDeleted();
         const toDelete=deleted.filter(id=>serverIds.has(id));
@@ -344,17 +360,20 @@ if(auth){
         gastos=snap.docs.map(d=>({id:d.id,...d.data()})).filter(g=>!deleted.includes(g.id));
         persist();render();
         $("status").textContent="";
-      },()=>{
+      },err=>{
+        // Antes la escucha moría aquí para siempre; ahora se reintenta
+        listening=false;unsub=null;
         $("status").textContent="Sin conexión";
         const saved=load();if(saved&&saved.length){gastos=saved;render()}
+        const authErr=err&&(err.code==="permission-denied"||err.code==="unauthenticated");
+        clearTimeout(retryT);
+        retryT=setTimeout(()=>{
+          const u=auth.currentUser;if(!u||listening)return;
+          (authErr?u.getIdToken(true):Promise.resolve()).then(()=>listen(u)).catch(()=>{listening=false});
+        },retryDelay);
+        retryDelay=Math.min(retryDelay*2,60000);
       });
-    }else{
-      setAuthUI(false);
-      if(unsub){unsub();unsub=null;}
-      col=null;
-      // No borrar datos locales al cerrar sesión — seguir en modo local
-    }
-  });
+  }
 }else{
   $("loadingScreen").hidden=true;
   const saved=load();
