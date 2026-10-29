@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Tests — Mis Gastos</title>
+<style>
+  body{font-family:monospace;padding:24px;background:#0f1412;color:#e0e0e0;margin:0}
+  h1{font-size:16px;margin:0 0 16px}
+  .pass{color:#4caf50} .fail{color:#f44336} .section{margin-top:20px;font-size:13px;color:#888}
+  #summary{margin-top:20px;font-size:15px;font-weight:bold}
+</style>
+</head>
+<body>
+<h1>Tests — Mis Gastos</h1>
+<div id="out"></div>
+<div id="summary"></div>
+<script>
+// ── funciones puras copiadas de app.js ──────────────────────────────────────
+const DEFAULT_CATS=[
+  ["Comida fuera","--c1"],["Súper","--c3"],["Regalos","--c2"],["Salidas y fiesta","--c4"],
+  ["Transporte","--c6"],["Cafés y snacks","--c5"],["Suscripciones","--c0"],["Tecnología","--c7"],["Otros","--c8"]];
+let CATS=[...DEFAULT_CATS];
+const eur=v=>v.toLocaleString("es-ES",{minimumFractionDigits:2,maximumFractionDigits:2});
+const pad=n=>String(n).padStart(2,"0");
+const parseAmt=s=>{const v=parseFloat(String(s).replace(/\s|€/g,"").replace(",","."));return isFinite(v)?Math.round(v*100)/100:NaN};
+const color=n=>{const c=CATS.find(x=>x[0]===n);return `var(${c?c[1]:"--c8"})`;};
+const norm=s=>s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"");
+const shiftMonth=(ym,d)=>{let [y,m]=ym.split("-").map(Number);m+=d;while(m<1){m+=12;y--}while(m>12){m-=12;y++}return `${y}-${pad(m)}`};
+const monthName=ym=>{const [y,m]=ym.split("-").map(Number);return new Date(y,m-1,1).toLocaleDateString("es-ES",{month:"long",year:"numeric"})};
+const pendingItems=(localGastos,serverIds)=>localGastos.filter(g=>g.id&&!serverIds.has(g.id));
+
+// ── runner ───────────────────────────────────────────────────────────────────
+let pass=0,fail=0;
+const out=document.getElementById("out");
+function section(name){const d=document.createElement("div");d.className="section";d.textContent="── "+name;out.appendChild(d)}
+function eq(label,got,want){
+  const ok=JSON.stringify(got)===JSON.stringify(want);
+  if(ok)pass++;else fail++;
+  const d=document.createElement("div");
+  d.className=ok?"pass":"fail";
+  d.textContent=(ok?"✓ ":"✗ ")+label+(ok?"":` → got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+  out.appendChild(d);
+}
+function ok(label,val){eq(label,!!val,true)}
+
+// ── parseAmt ────────────────────────────────────────────────────────────────
+section("parseAmt");
+eq("entero",                 parseAmt("12"),        12);
+eq("decimal con punto",      parseAmt("3.50"),       3.5);
+eq("decimal con coma",       parseAmt("3,50"),       3.5);
+eq("con €",                  parseAmt("12,99 €"),   12.99);
+eq("con espacios",           parseAmt(" 5 "),        5);
+eq("vacío → NaN",            isNaN(parseAmt("")),   true);
+eq("texto → NaN",            isNaN(parseAmt("abc")),true);
+eq("redondeo a 2 decimales", parseAmt("1.005"),      1.01);
+
+// ── eur (formato es-ES) ─────────────────────────────────────────────────────
+section("eur");
+eq("entero",      eur(10),      "10,00");
+eq("decimales",   eur(3.5),     "3,50");
+eq("miles",       eur(1000),    "1.000,00");
+eq("dos decimales exactos", eur(9.99), "9,99");
+
+// ── norm (tildes) ────────────────────────────────────────────────────────────
+section("norm — tildes");
+eq("acento agudo",    norm("Café"),     "cafe");
+eq("eñe",             norm("Niño"),     "nino");
+eq("mayúscula+tilde", norm("MÉDICO"),   "medico");
+eq("sin tilde",       norm("cafe"),     "cafe");
+eq("match café/cafe", norm("Café")===norm("cafe"), true);
+eq("match mercadona", norm("Mercadona")===norm("mercadona"), true);
+
+// ── shiftMonth ───────────────────────────────────────────────────────────────
+section("shiftMonth");
+eq("siguiente mes",          shiftMonth("2026-10",1),  "2026-11");
+eq("mes anterior",           shiftMonth("2026-10",-1), "2026-09");
+eq("wrap dic→ene (+1)",      shiftMonth("2026-12",1),  "2027-01");
+eq("wrap ene→dic (-1)",      shiftMonth("2026-01",-1), "2025-12");
+eq("salto múltiple +3",      shiftMonth("2026-10",3),  "2027-01");
+eq("pad mes < 10",           shiftMonth("2026-09",0),  "2026-09");
+
+// ── color ────────────────────────────────────────────────────────────────────
+section("color");
+eq("categoría conocida",   color("Comida fuera"),  "var(--c1)");
+eq("categoría desconocida",color("Inexistente"),   "var(--c8)");
+eq("Súper",                color("Súper"),         "var(--c3)");
+
+// ── offline sync: pendingItems ───────────────────────────────────────────────
+section("offline sync — pendingItems");
+const local=[{id:"a1",concepto:"Café",importe:1.5},{id:"b2",concepto:"Bus",importe:2},{id:"c3",concepto:"Mercadona",importe:30}];
+const serverIds=new Set(["a1","b2"]);
+eq("detecta 1 pendiente",   pendingItems(local,serverIds).length,             1);
+eq("pendiente correcto",    pendingItems(local,serverIds)[0].id,              "c3");
+eq("sin pendientes",        pendingItems(local,new Set(["a1","b2","c3"])).length, 0);
+eq("todos pendientes",      pendingItems(local,new Set()).length,              3);
+eq("item sin id ignorado",  pendingItems([{concepto:"x",importe:1}],new Set()).length, 0);
+
+// ── monthName (muestra, no falla) ─────────────────────────────────────────
+section("monthName");
+ok("octubre 2026", monthName("2026-10").toLowerCase().includes("octubre"));
+ok("enero 2027",   monthName("2027-01").toLowerCase().includes("enero"));
+
+// ── resumen ──────────────────────────────────────────────────────────────────
+const s=document.getElementById("summary");
+s.textContent=`${pass+fail} tests: ${pass} pasados, ${fail} fallados`;
+s.style.color=fail===0?"#4caf50":"#f44336";
+</script>
+</body>
+</html>

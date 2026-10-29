@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Mis Gastos</title>
+<meta name="theme-color" content="#F2F4F1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F1412" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Gastos">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="fonts/fonts.css">
+<link rel="stylesheet" href="style.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}body.auth-pending .wrap,body.auth-pending .fab{visibility:hidden}#loadingScreen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:999}#loadingScreen .spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="month">
+      <button class="icon-btn" id="prev" aria-label="Mes anterior">‹</button>
+      <span id="monthLabel">—</span>
+      <button class="icon-btn" id="next" aria-label="Mes siguiente">›</button>
+    </div>
+    <div class="top-r">
+      <button class="text-btn" id="statsToggle">Año</button>
+      <div class="status" id="status"></div>
+    </div>
+  </div>
+
+  <section class="hero">
+    <div class="label" id="heroLabel">Gastado este mes</div>
+    <div class="total num" id="total">0,00<small>€</small></div>
+    <div class="sub num" id="sub">&nbsp;</div>
+  </section>
+
+  <div class="stack" id="stack" aria-hidden="true"></div>
+
+  <section>
+    <h2>Por categoría<button class="text-btn" id="editCatsBtn">Editar</button></h2>
+    <div class="cats" id="cats" style="margin-top:8px"></div>
+  </section>
+
+  <section>
+    <h2 id="listTitle">Movimientos<button class="text-btn" id="searchToggle" style="margin-left:auto;font-size:14px">Buscar</button></h2>
+    <div class="search-wrap" id="searchWrap"><input id="searchInput" class="text" placeholder="Buscar gastos…" style="margin-top:8px;width:100%"></div>
+    <div class="list" id="list" style="margin-top:10px">
+      <div class="empty">Aquí aparecerán tus gastos.<br>Pulsa <b>Añadir gasto</b> para apuntar el primero.</div>
+    </div>
+  </section>
+  <section>
+    <h2>Copia de seguridad</h2>
+    <p class="status" style="margin:6px 0 10px">Tus gastos se guardan solo en este móvil. Descarga una copia de vez en cuando.</p>
+    <div class="backup">
+      <button id="exportBtn">Descargar copia</button>
+      <label for="importFile">Restaurar copia<input id="importFile" type="file" accept=".json,application/json"></label>
+      <button id="csvBtn">Exportar a Excel (CSV)</button>
+    </div>
+  </section>
+  <div style="padding:8px 0 24px;text-align:center">
+    <button class="text-btn" id="logoutBtn" style="color:var(--muted);font-size:13px;display:none">Cambiar de cuenta</button>
+    <button class="text-btn" id="loginBtn" style="color:var(--muted);font-size:13px">Sincronizar con Google</button>
+  </div>
+</div>
+
+<button class="fab" id="fab"><b>+</b> Añadir gasto</button>
+
+<div class="scrim" id="scrim" hidden></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden>
+  <form class="sheet-in" id="form" autocomplete="off">
+    <div class="grab"></div>
+    <div class="sheet-head">
+      <h3 id="sheetTitle">Nuevo gasto</h3>
+      <button type="button" class="icon-btn" id="close" aria-label="Cerrar">✕</button>
+    </div>
+    <div class="amount"><input id="importe" inputmode="decimal" placeholder="0,00" aria-label="Importe"><span>€</span></div>
+    <div class="field">
+      <label for="concepto">Concepto</label>
+      <input class="text" id="concepto" placeholder="Kebab, Mercadona, bus…" enterkeyhint="done">
+    </div>
+    <div class="field">
+      <label>Tipo de gasto</label>
+      <div class="chips" id="chips"></div>
+    </div>
+    <div class="field">
+      <label for="fecha">Fecha</label>
+      <input class="text" id="fecha" type="date">
+    </div>
+    <div class="row">
+      <button type="button" class="del" id="del" hidden>Borrar</button>
+      <button type="submit" class="save" id="save" disabled>Guardar</button>
+    </div>
+  </form>
+</div>
+<div class="sheet" id="catSheet" role="dialog" aria-modal="true" hidden>
+  <div class="sheet-in">
+    <div class="grab"></div>
+    <div class="sheet-head">
+      <h3>Categorías</h3>
+      <button type="button" class="icon-btn" id="closeCatsBtn">✕</button>
+    </div>
+    <div id="catList"></div>
+    <button id="addCatBtn">+ Añadir categoría</button>
+  </div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+<div id="loadingScreen" hidden><div class="spin"></div></div>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
