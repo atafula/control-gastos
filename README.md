@@ -100,9 +100,3 @@ mis-gastos/
 **Categorías:** edita `DEFAULT_CATS` en `app.js`. Cada una lleva un color (`--c0`…`--c10` en `style.css`).
 
 **Después de cambiar archivos:** sube la versión del caché en `sw.js` para que los móviles cojan los cambios.
-
----
-
-## Licencia
-
-MIT — haz lo que quieras.
