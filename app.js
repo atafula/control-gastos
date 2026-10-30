@@ -17,7 +17,10 @@ const KEY="mis-gastos-v3";
 const UID_KEY="mis-gastos-uid";
 const DEL_KEY="mis-gastos-deleted";
 // Gastos del atajo: "fecha" llega con hora (2026-10-30T20:30:00); la hora se usa para ordenar
-function fixGasto(g){if(g&&typeof g.fecha==="string"&&g.fecha.length>10){if(!g.ts){const t=new Date(g.fecha).getTime();if(t)g.ts=t}g.fecha=g.fecha.slice(0,10)}return g}
+function fixGasto(g){if(g&&typeof g.fecha==="string"){const f=g.fecha.trim();
+  if(f.length>10){const m=f.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if(m&&!g.ts)g.ts=new Date(+m[1],m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0)).getTime()}
+  g.fecha=f.slice(0,10)}return g}
 function load(){try{const r=localStorage.getItem(KEY);if(r){const v=JSON.parse(r);return Array.isArray(v)?v.map(fixGasto):v}}catch(e){}return null}
 function persist(){try{localStorage.setItem(KEY,JSON.stringify(gastos))}catch(e){toast("No se pudo guardar en el móvil")}}
 function loadDeleted(){try{return JSON.parse(localStorage.getItem(DEL_KEY))||[]}catch(e){return[]}}
