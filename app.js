@@ -378,7 +378,10 @@ if(auth){
           if(toDelete.length) localStorage.setItem(DEL_KEY,JSON.stringify(deleted.filter(id=>!toDelete.includes(id))));
         }
         // Renderizar siempre desde el servidor, no bloquear por pendientes
-        gastos=snap.docs.map(d=>({id:d.id,...d.data()})).filter(g=>!deleted.includes(g.id));
+        gastos=snap.docs.map(d=>{const g={id:d.id,...d.data()};
+          // Gastos del atajo: "fecha" llega con hora (2026-10-30T20:30:00); se usa para ordenar
+          if(g.fecha&&g.fecha.length>10){if(!g.ts){const t=new Date(g.fecha).getTime();if(t)g.ts=t}g.fecha=g.fecha.slice(0,10)}
+          return g}).filter(g=>!deleted.includes(g.id));
         persist();render();
         $("status").textContent="";
       },err=>{
