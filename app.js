@@ -4,7 +4,23 @@ const DEFAULT_CATS=[
  ["Transporte","--c6"],["Cafés y snacks","--c5"],["Suscripciones","--c0"],["Tecnología","--c7"],["Otros","--c8"]];
 const CATS_KEY="mis-gastos-cats";
 let CATS;try{CATS=JSON.parse(localStorage.getItem(CATS_KEY))||DEFAULT_CATS}catch(e){CATS=DEFAULT_CATS}
-const saveCats=()=>{try{localStorage.setItem(CATS_KEY,JSON.stringify(CATS))}catch(e){}};
+const saveCats=()=>{try{localStorage.setItem(CATS_KEY,JSON.stringify(CATS))}catch(e){};pushCats()};
+// Categorías en la nube (users/{uid}): se conservan al cambiar de móvil y el atajo las lee de "catsText"
+function pushCats(){try{const u=auth&&auth.currentUser;if(!u||!db)return;
+  db.collection("users").doc(u.uid).set({cats:CATS.map(([n,c])=>({n,c})),catsText:CATS.map(c=>c[0]).join("\n")},{merge:true}).catch(()=>{})}catch(e){}}
+let catsUnsub=null;
+function listenCats(user){
+  if(catsUnsub)catsUnsub();
+  catsUnsub=db.collection("users").doc(user.uid).onSnapshot(doc=>{
+    const d=doc.exists?doc.data():null;
+    if(!d||!Array.isArray(d.cats)||!d.cats.length){pushCats();return} // primera vez: sube las del móvil
+    const next=d.cats.filter(x=>x&&x.n).map(x=>[x.n,x.c||"--c8"]);
+    if(JSON.stringify(next)===JSON.stringify(CATS))return;
+    CATS=next;try{localStorage.setItem(CATS_KEY,JSON.stringify(CATS))}catch(e){}
+    buildChips();if($("catSheet").hidden)render();
+  },()=>{});
+}
+function stopCats(){if(catsUnsub){catsUnsub();catsUnsub=null}}
 const ALL_COLORS=["--c0","--c1","--c2","--c3","--c4","--c5","--c6","--c7","--c8","--c9","--c10"];
 const color=n=>{const c=CATS.find(x=>x[0]===n);return `var(${c?c[1]:"--c8"})`};
 const $=id=>document.getElementById(id);
@@ -353,9 +369,11 @@ if(auth){
       col=db.collection("users").doc(user.uid).collection("gastos");
       $("status").textContent="";
       listen(user);
+      listenCats(user);
     }else{
       setAuthUI(false);
       stopListen();
+      stopCats();
       col=null;
       // No borrar datos locales al cerrar sesión — seguir en modo local
     }
