@@ -16,7 +16,9 @@ let gastos=[];           // {id, concepto, importe, categoria, fecha, importado}
 const KEY="mis-gastos-v3";
 const UID_KEY="mis-gastos-uid";
 const DEL_KEY="mis-gastos-deleted";
-function load(){try{const r=localStorage.getItem(KEY);if(r)return JSON.parse(r)}catch(e){}return null}
+// Gastos del atajo: "fecha" llega con hora (2026-10-30T20:30:00); la hora se usa para ordenar
+function fixGasto(g){if(g&&typeof g.fecha==="string"&&g.fecha.length>10){if(!g.ts){const t=new Date(g.fecha).getTime();if(t)g.ts=t}g.fecha=g.fecha.slice(0,10)}return g}
+function load(){try{const r=localStorage.getItem(KEY);if(r){const v=JSON.parse(r);return Array.isArray(v)?v.map(fixGasto):v}}catch(e){}return null}
 function persist(){try{localStorage.setItem(KEY,JSON.stringify(gastos))}catch(e){toast("No se pudo guardar en el móvil")}}
 function loadDeleted(){try{return JSON.parse(localStorage.getItem(DEL_KEY))||[]}catch(e){return[]}}
 function addDeleted(id){try{const d=new Set(loadDeleted());d.add(id);localStorage.setItem(DEL_KEY,JSON.stringify([...d]))}catch(e){}}
@@ -378,10 +380,7 @@ if(auth){
           if(toDelete.length) localStorage.setItem(DEL_KEY,JSON.stringify(deleted.filter(id=>!toDelete.includes(id))));
         }
         // Renderizar siempre desde el servidor, no bloquear por pendientes
-        gastos=snap.docs.map(d=>{const g={id:d.id,...d.data()};
-          // Gastos del atajo: "fecha" llega con hora (2026-10-30T20:30:00); se usa para ordenar
-          if(g.fecha&&g.fecha.length>10){if(!g.ts){const t=new Date(g.fecha).getTime();if(t)g.ts=t}g.fecha=g.fecha.slice(0,10)}
-          return g}).filter(g=>!deleted.includes(g.id));
+        gastos=snap.docs.map(d=>fixGasto({id:d.id,...d.data()})).filter(g=>!deleted.includes(g.id));
         persist();render();
         $("status").textContent="";
       },err=>{
