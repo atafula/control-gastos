@@ -44,14 +44,14 @@
 
   <section>
     <h2 id="listTitle">Movimientos<button class="text-btn" id="searchToggle" style="margin-left:auto;font-size:14px">Buscar</button></h2>
-    <div class="search-wrap" id="searchWrap"><input id="searchInput" class="text" placeholder="Buscar gastos…" style="margin-top:8px;width:100%"></div>
+    <div class="search-wrap" id="searchWrap"><input id="searchInput" class="text" placeholder="Buscar gastos…" style="margin-top:8px;width:100%;box-sizing:border-box"></div>
     <div class="list" id="list" style="margin-top:10px">
       <div class="empty">Aquí aparecerán tus gastos.<br>Pulsa <b>Añadir gasto</b> para apuntar el primero.</div>
     </div>
   </section>
   <section>
     <h2>Copia de seguridad</h2>
-    <p class="status" style="margin:6px 0 10px">Tus gastos se guardan solo en este móvil. Descarga una copia de vez en cuando.</p>
+    <p class="status" id="backupNote" style="margin:6px 0 10px">Tus gastos se guardan solo en este móvil. Descarga una copia de vez en cuando.</p>
     <div class="backup">
       <button id="exportBtn">Descargar copia</button>
       <label for="importFile">Restaurar copia<input id="importFile" type="file" accept=".json,application/json"></label>

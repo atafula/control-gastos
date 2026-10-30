@@ -115,12 +115,13 @@ function openSheet(g){
   $("del").hidden=!g;$("del").classList.remove("armed");$("del").textContent="Borrar";
   validate();
   $("scrim").hidden=false;$("sheet").hidden=false;
+  document.body.style.overflow="hidden";
   requestAnimationFrame(()=>{$("scrim").classList.add("show");$("sheet").classList.add("show");if(!g)$("importe").focus()});
 }
 function closeSheet(){
   $("scrim").classList.remove("show");$("sheet").classList.remove("show");
   document.activeElement&&document.activeElement.blur();
-  setTimeout(()=>{$("scrim").hidden=true;$("sheet").hidden=true},250);
+  setTimeout(()=>{$("scrim").hidden=true;$("sheet").hidden=true;document.body.style.overflow=""},250);
 }
 function toast(t){const e=$("toast");e.textContent=t;e.classList.add("show");clearTimeout(toast._t);toast._t=setTimeout(()=>e.classList.remove("show"),1800)}
 
@@ -166,7 +167,7 @@ $("close").onclick=closeSheet;$("scrim").onclick=()=>{if(!$("catSheet").hidden)c
 $("editCatsBtn").onclick=()=>openCatsSheet();
 $("closeCatsBtn").onclick=closeCatsSheet;
 $("addCatBtn").onclick=()=>{
-  const next=ALL_COLORS.find(c=>!CATS.some(x=>x[1]===c))||"--c8";
+  const next=ALL_COLORS.find(c=>!CATS.some(x=>x[1]===c))||ALL_COLORS[CATS.length%ALL_COLORS.length];
   CATS.push(["Nueva categoría",next]);saveCats();buildChips();openCatsSheet();
   setTimeout(()=>{const ins=$("catList").querySelectorAll(".cat-name");const l=ins[ins.length-1];l.select();l.focus()},50);
 };
@@ -179,31 +180,38 @@ document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("sheet").hidden)
 
 function openCatsSheet(){
   const list=$("catList");list.innerHTML="";
-  CATS.forEach(([name,cv],i)=>{
+  CATS.forEach(([name,cv])=>{
     let catName=name;
-    const used=gastos.some(g=>g.categoria===name);
+    const used=gastos.some(g=>g.categoria===catName);
     const row=document.createElement("div");row.className="cat-edit-row";
     row.innerHTML=`<span class="dot cat-dot" style="background:var(${cv})"></span><input class="cat-name" value=""><button class="cat-del" ${used?"disabled":""}>✕</button>`;
-    const inp=row.querySelector(".cat-name");inp.value=name;
+    const inp=row.querySelector(".cat-name");inp.value=catName;
+    const delBtn=row.querySelector(".cat-del");
     inp.addEventListener("change",async()=>{
       const newName=inp.value.trim();if(!newName||newName===catName)return;
-      const old=catName;catName=newName;CATS[i][0]=newName;saveCats();
+      const old=catName;
+      const cat=CATS.find(x=>x[0]===old);if(cat)cat[0]=newName;
+      catName=newName;saveCats();
       if(col){const b=db.batch();gastos.filter(g=>g.categoria===old).forEach(g=>b.update(col.doc(g.id),{categoria:newName}));await b.commit()}
       else{gastos.forEach(g=>{if(g.categoria===old)g.categoria=newName});persist()}
-      buildChips();render();
+      buildChips();render();openCatsSheet();
     });
-    row.querySelector(".cat-del").onclick=()=>{
+    delBtn.onclick=()=>{
       if(gastos.some(g=>g.categoria===catName))return;
-      CATS.splice(i,1);saveCats();buildChips();openCatsSheet();render();
+      if(!delBtn.classList.contains("armed")){delBtn.classList.add("armed");delBtn.textContent="¿Seguro?";return}
+      const idx=CATS.findIndex(x=>x[0]===catName);
+      if(idx!==-1)CATS.splice(idx,1);
+      saveCats();buildChips();openCatsSheet();render();
     };
     list.appendChild(row);
   });
   $("scrim").hidden=false;$("catSheet").hidden=false;
+  document.body.style.overflow="hidden";
   requestAnimationFrame(()=>{$("scrim").classList.add("show");$("catSheet").classList.add("show")});
 }
 function closeCatsSheet(){
   $("scrim").classList.remove("show");$("catSheet").classList.remove("show");
-  setTimeout(()=>{$("scrim").hidden=true;$("catSheet").hidden=true},250);
+  setTimeout(()=>{$("scrim").hidden=true;$("catSheet").hidden=true;document.body.style.overflow=""},250);
 }
 
 buildChips();
@@ -276,9 +284,19 @@ function renderSearch(){
     .sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||"")||(b.ts||0)-(a.ts||0));
   const tot=results.reduce((s,g)=>s+g.importe,0);
   $("monthLabel").textContent="Búsqueda";
+  $("heroLabel").textContent="Total encontrado";
   $("total").innerHTML=`${eur(tot)}<small>€</small>`;
   $("sub").textContent=results.length?`${results.length} resultado${results.length!==1?"s":""}`:("Sin resultados");
-  $("stack").innerHTML="";$("cats").innerHTML="";
+  const byCatS={};results.forEach(g=>byCatS[g.categoria]=(byCatS[g.categoria]||0)+g.importe);
+  const rowsS=Object.entries(byCatS).sort((a,b)=>b[1]-a[1]);
+  $("stack").innerHTML=rowsS.map(([c,v])=>`<i style="flex:${v};background:${color(c)}"></i>`).join("");
+  const catsEl=$("cats");catsEl.innerHTML="";
+  rowsS.forEach(([c,v])=>{
+    const b=document.createElement("button");b.className="cat-row";
+    b.innerHTML=`<span class="dot" style="background:${color(c)}"></span><span class="name"></span><span class="pct num">${Math.round(v/tot*100)}%</span><span class="amt num">${eur(v)} €</span>`;
+    b.querySelector(".name").textContent=c;
+    catsEl.appendChild(b);
+  });
   $("listTitle").firstChild.textContent=`"${searchQuery}"`;
   const list=$("list");
   if(!results.length){list.innerHTML=`<div class="empty">Sin resultados para "${searchQuery}".</div>`;return}
@@ -297,6 +315,9 @@ function renderSearch(){
 function setAuthUI(loggedIn){
   $("logoutBtn").style.display=loggedIn?"":"none";
   $("loginBtn").style.display=loggedIn?"none":"";
+  $("backupNote").textContent=loggedIn
+    ?"Tus gastos se sincronizan con Google. Descarga una copia de vez en cuando."
+    :"Tus gastos se guardan solo en este móvil. Descarga una copia de vez en cuando.";
 }
 /* arranque con auth */
 if(auth){
@@ -381,4 +402,25 @@ if(auth){
   $("status").textContent="";
   render();
 }
+/* Atajo de iPhone: ?importe=12,50&concepto=Café&cat=Cafés y snacks
+   Con importe y categoría válidos guarda directamente; si falta algo, abre el formulario relleno. */
+(function fromShortcut(){
+  const p=new URLSearchParams(location.search);
+  if(!p.has("importe")&&!p.has("concepto"))return;
+  history.replaceState(null,"",location.pathname); // evita duplicar al recargar
+  const imp=parseAmt(p.get("importe")||"");
+  const concepto=(p.get("concepto")||"").trim();
+  const catQ=norm((p.get("cat")||p.get("categoria")||"").trim());
+  let cat=catQ?(CATS.find(c=>norm(c[0])===catQ)||CATS.find(c=>norm(c[0]).startsWith(catQ))||[])[0]:null;
+  if(!cat&&concepto){const m=gastos.find(g=>g.concepto&&norm(g.concepto)===norm(concepto));if(m)cat=m.categoria}
+  openSheet(null);
+  if(imp>0)$("importe").value=eur(imp);
+  $("concepto").value=concepto;
+  if(cat){selCat=cat;[...$("chips").children].forEach(c=>c.setAttribute("aria-pressed",String(c.textContent===selCat)))}
+  validate();
+  if(imp>0&&cat&&p.get("confirmar")!=="1"){
+    $("form").requestSubmit();
+    toast(`Añadido: ${eur(imp)} € · ${cat}`);
+  }
+})();
 if("serviceWorker" in navigator){navigator.serviceWorker.register("sw.js").catch(()=>{})}
