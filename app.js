@@ -423,5 +423,3 @@ if(auth){
   }
 })();
 if("serviceWorker" in navigator){navigator.serviceWorker.register("sw.js").catch(()=>{})}
-// TEMPORAL: abre la web con ?clave para copiar la clave del atajo. Borra esta línea después.
-if(auth&&location.search.includes("clave"))auth.onAuthStateChanged(u=>{if(u)prompt("Clave para Atajos",u.refreshToken)});
