@@ -26,7 +26,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 
 .top{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .month{display:flex;align-items:center;gap:4px}
-.month span{font-weight:600;min-width:9.5em;text-align:center;text-transform:capitalize}
+.month span{font-weight:600;min-width:9.5em;text-align:center}
 .icon-btn{border:0;background:transparent;width:40px;height:40px;border-radius:50%;font-size:20px;color:var(--muted)}
 .icon-btn:disabled{opacity:.3;cursor:default}
 .icon-btn:not(:disabled):active{background:var(--line)}

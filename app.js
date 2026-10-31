@@ -1,9 +1,9 @@
 const SEED=[];
-const DEFAULT_CATS=[
- ["Comida fuera","--c1"],["Súper","--c3"],["Regalos","--c2"],["Salidas y fiesta","--c4"],
- ["Transporte","--c6"],["Cafés y snacks","--c5"],["Suscripciones","--c0"],["Tecnología","--c7"],["Otros","--c8"]];
 const CATS_KEY="mis-gastos-cats";
-let CATS;try{CATS=JSON.parse(localStorage.getItem(CATS_KEY))||DEFAULT_CATS}catch(e){CATS=DEFAULT_CATS}
+// Si lo guardado está estropeado, se usan las de serie (antes la app dejaba de funcionar)
+let CATS;try{const v=JSON.parse(localStorage.getItem(CATS_KEY));CATS=validCats(v)?safeCats(v):DEFAULT_CATS.map(c=>[...c])}catch(e){CATS=DEFAULT_CATS.map(c=>[...c])}
+// Si había algo que limpiar (repetidas, colores raros), se guarda ya limpio
+try{const raw=localStorage.getItem(CATS_KEY);if(raw&&raw!==JSON.stringify(CATS))localStorage.setItem(CATS_KEY,JSON.stringify(CATS))}catch(e){}
 const saveCats=()=>{try{localStorage.setItem(CATS_KEY,JSON.stringify(CATS))}catch(e){};pushCats()};
 // Categorías en la nube (users/{uid}): se conservan al cambiar de móvil y el atajo las lee de "catsText"
 function pushCats(){try{const u=auth&&auth.currentUser;if(!u||!db)return;
@@ -14,34 +14,37 @@ function listenCats(user){
   catsUnsub=db.collection("users").doc(user.uid).onSnapshot(doc=>{
     const d=doc.exists?doc.data():null;
     if(!d||!Array.isArray(d.cats)||!d.cats.length){pushCats();return} // primera vez: sube las del móvil
-    const next=d.cats.filter(x=>x&&x.n).map(x=>[x.n,x.c||"--c8"]);
+    const next=safeCats(d.cats.filter(x=>x&&typeof x.n==="string"&&x.n.trim()).map(x=>[x.n,x.c]));
+    if(!next.length)return;
     if(JSON.stringify(next)===JSON.stringify(CATS))return;
     CATS=next;try{localStorage.setItem(CATS_KEY,JSON.stringify(CATS))}catch(e){}
     buildChips();if($("catSheet").hidden)render();
   },()=>{});
 }
 function stopCats(){if(catsUnsub){catsUnsub();catsUnsub=null}}
-const ALL_COLORS=["--c0","--c1","--c2","--c3","--c4","--c5","--c6","--c7","--c8","--c9","--c10"];
-const color=n=>{const c=CATS.find(x=>x[0]===n);return `var(${c?c[1]:"--c8"})`};
+const color=n=>{const c=CATS.find(x=>x[0]===n);return `var(${safeColor(c&&c[1])})`};
 const $=id=>document.getElementById(id);
-const eur=v=>v.toLocaleString("es-ES",{minimumFractionDigits:2,maximumFractionDigits:2});
-const pad=n=>String(n).padStart(2,"0");
-const todayISO=()=>{const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`};
 
 let gastos=[];           // {id, concepto, importe, categoria, fecha, importado}
 const KEY="mis-gastos-v3";
 const UID_KEY="mis-gastos-uid";
 const DEL_KEY="mis-gastos-deleted";
-// Gastos del atajo: "fecha" llega con hora (2026-10-30T20:30:00); la hora se usa para ordenar
-function fixGasto(g){if(g&&typeof g.fecha==="string"){const f=g.fecha.trim();
-  if(f.length>10){const m=f.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?/);
-    if(m&&!g.ts)g.ts=new Date(+m[1],m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0)).getTime()}
-  g.fecha=f.slice(0,10)}return g}
 function load(){try{const r=localStorage.getItem(KEY);if(r){const v=JSON.parse(r);return Array.isArray(v)?v.map(fixGasto):v}}catch(e){}return null}
 function persist(){try{localStorage.setItem(KEY,JSON.stringify(gastos))}catch(e){toast("No se pudo guardar en el móvil")}}
 function loadDeleted(){try{return JSON.parse(localStorage.getItem(DEL_KEY))||[]}catch(e){return[]}}
 function addDeleted(id){try{const d=new Set(loadDeleted());d.add(id);localStorage.setItem(DEL_KEY,JSON.stringify([...d]))}catch(e){}}
-function clearLocalData(){try{localStorage.removeItem(KEY);localStorage.removeItem(UID_KEY);localStorage.removeItem(DEL_KEY)}catch(e){}}
+function clearLocalData(){try{localStorage.removeItem(KEY);localStorage.removeItem(UID_KEY);localStorage.removeItem(DEL_KEY);localStorage.removeItem(PEND_KEY)}catch(e){}}
+// Gastos creados/editados sin sesión que aún no están en la nube. Solo estos se suben al conectar:
+// así un gasto borrado en otro dispositivo no "resucita".
+const PEND_KEY="mis-gastos-pending";
+function loadPending(){try{const v=JSON.parse(localStorage.getItem(PEND_KEY));return Array.isArray(v)?v:null}catch(e){return null}}
+function savePending(ids){try{localStorage.setItem(PEND_KEY,JSON.stringify([...new Set(ids)]))}catch(e){}}
+function addPending(ids){savePending([...(loadPending()||[]),...ids])}
+function dropPending(ids){const s=new Set(ids);savePending((loadPending()||[]).filter(id=>!s.has(id)))}
+// Primera vez con esta versión: si nunca se inició sesión, todo lo local está pendiente; si sí, ya estaba en la nube.
+if(loadPending()===null){const l=load()||[];savePending(localStorage.getItem(UID_KEY)?[]:l.filter(g=>g&&g.id).map(g=>g.id))}
+// Firebase admite 500 operaciones por lote: se trocean
+function commitOps(ops){const ps=[];for(let i=0;i<ops.length;i+=400){const b=db.batch();ops.slice(i,i+400).forEach(f=>f(b));ps.push(b.commit())}return Promise.all(ps)}
 const FIREBASE_CONFIG={
   apiKey: "AIzaSyBLGJM6G0epcqg1vHi3sCgwxP8lpftZQQI",
   authDomain: "mis-gastos-9f57b.firebaseapp.com",
@@ -60,11 +63,10 @@ if(FIREBASE_CONFIG.apiKey!=="REEMPLAZA"){
   }catch(e){}
 }
 let month=todayISO().slice(0,7);
-let filter=null,searchQuery="",statsMode=false;
-let editing=null, selCat=null;
+let filter=null,searchQuery="",statsMode=false,statsYear=new Date().getFullYear();
+let editing=null, selCat=null, catManual=false;
+const syncing=new Set(); // ids que se están subiendo ahora mismo
 
-function monthName(ym){const [y,m]=ym.split("-").map(Number);return new Date(y,m-1,1).toLocaleDateString("es-ES",{month:"long",year:"numeric"})}
-function shiftMonth(ym,d){let [y,m]=ym.split("-").map(Number);m+=d;while(m<1){m+=12;y--}while(m>12){m-=12;y++}return `${y}-${pad(m)}`}
 
 function render(){
   $("prev").disabled=false;
@@ -73,7 +75,7 @@ function render(){
   $("searchToggle").hidden=false;
   $("heroLabel").textContent="Gastado este mes";
   if(searchQuery){renderSearch();return}
-  $("monthLabel").textContent=monthName(month);
+  {const n=monthName(month);$("monthLabel").textContent=n.charAt(0).toUpperCase()+n.slice(1)} // "Octubre de 2026"
   $("next").disabled = month>=todayISO().slice(0,7);
   const inMonth=gastos.filter(g=>(g.fecha||"").slice(0,7)===month);
   const total=inMonth.reduce((s,g)=>s+g.importe,0);
@@ -119,19 +121,18 @@ function buildChips(){
   CATS.forEach(([n,v])=>{
     const b=document.createElement("button");b.type="button";b.className="chip";b.setAttribute("aria-pressed","false");
     b.innerHTML=`<i style="background:var(${v})"></i><span></span>`;b.querySelector("span").textContent=n;
-    b.onclick=()=>{selCat=n;[...box.children].forEach(c=>c.setAttribute("aria-pressed",String(c===b)));validate()};
+    b.onclick=()=>{selCat=n;catManual=true;[...box.children].forEach(c=>c.setAttribute("aria-pressed",String(c===b)));validate()};
     box.appendChild(b);
   });
 }
-const parseAmt=s=>{const v=parseFloat(String(s).replace(/\s|€/g,"").replace(",","."));return isFinite(v)?Math.round(v*100)/100:NaN};
-function validate(){$("save").disabled=!(parseAmt($("importe").value)>0&&selCat)}
+function validate(){const v=parseAmt($("importe").value);$("save").disabled=!(v>0&&v<LIMITS.importe&&selCat)}
 function openSheet(g){
   editing=g||null;
   $("sheetTitle").textContent=g?"Editar gasto":"Nuevo gasto";
-  $("importe").value=g?eur(g.importe):"";
+  $("importe").value=g?eurInput(g.importe):"";
   $("concepto").value=g?g.concepto:"";
   $("fecha").value=g?g.fecha:todayISO();
-  selCat=g?g.categoria:null;
+  selCat=g?g.categoria:null;catManual=false;
   [...$("chips").children].forEach(c=>c.setAttribute("aria-pressed",String(c.textContent===selCat)));
   $("del").hidden=!g;$("del").classList.remove("armed");$("del").textContent="Borrar";
   validate();
@@ -148,19 +149,28 @@ function toast(t){const e=$("toast");e.textContent=t;e.classList.add("show");cle
 
 $("form").addEventListener("submit",async e=>{
   e.preventDefault();
-  const body={concepto:$("concepto").value.trim(),importe:parseAmt($("importe").value),categoria:selCat,fecha:$("fecha").value||todayISO(),ts:Date.now()};
+  const body={concepto:$("concepto").value.trim().slice(0,LIMITS.concepto),importe:parseAmt($("importe").value),categoria:selCat,fecha:$("fecha").value||todayISO(),ts:editing&&editing.ts?editing.ts:Date.now()};
   if(!(body.importe>0)||!selCat)return;
+  if(body.importe>=LIMITS.importe){toast("El importe es demasiado grande");return}
   if(editing&&editing.importado&&body.fecha===editing.fecha) body.importado=true;
   $("save").disabled=true;
   if(col){
-    (editing?col.doc(editing.id).set(body):col.add(body)).catch(err=>{
-      if(err&&err.code==="invalid_argument")toast("Solo puedes ver estos gastos, no editarlos");
+    // Se guarda también en el móvil como "pendiente" hasta que Firebase confirme:
+    // si no hay conexión y se cierra la app, no se pierde.
+    const id=editing?editing.id:col.doc().id,g={id,...body};
+    const i=gastos.findIndex(x=>x.id===id);if(i>=0)gastos[i]=g;else gastos.push(g);
+    addPending([id]);persist();syncing.add(id);
+    col.doc(id).set(body).then(()=>dropPending([id])).catch(err=>{
+      if(err&&err.code==="permission-denied"){dropPending([id]);toast("Firebase ha rechazado el gasto")}
       else if(err&&err.code!=="unavailable")toast("No se pudo guardar. Inténtalo otra vez");
-    });
+    }).then(()=>syncing.delete(id));
   }else{
-    if(editing)Object.assign(editing,body);else gastos.push({id:"g"+Date.now(),...body});persist();render();
+    let id;if(editing){Object.assign(editing,body);id=editing.id}else{id="g"+Date.now();gastos.push({id,...body})}
+    addPending([id]);persist();
   }
   month=body.fecha.slice(0,7);
+  if(filter&&filter!==body.categoria)filter=null; // si no, el gasto nuevo no se vería
+  render(); // muestra el mes del gasto guardado
   closeSheet();
 });
 $("del").onclick=async()=>{
@@ -169,19 +179,17 @@ $("del").onclick=async()=>{
   try{
     const delId=editing.id;
     gastos=gastos.filter(g=>g!==editing);persist();render();
-    addDeleted(delId);
+    addDeleted(delId);dropPending([delId]);
     if(col) col.doc(delId).delete().catch(()=>{});
     closeSheet()
   }catch(e){toast("No se pudo borrar")}
 };
 $("importe").addEventListener("input",validate);
 $("concepto").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();e.target.blur()}});
-const norm=s=>s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"");
 $("concepto").addEventListener("input",e=>{
-  if(editing)return;
-  const v=norm(e.target.value.trim());if(!v)return;
-  const match=gastos.find(g=>g.concepto&&norm(g.concepto)===v);
-  if(match){selCat=match.categoria;[...$("chips").children].forEach(c=>c.setAttribute("aria-pressed",String(c.textContent===selCat)));validate()}
+  if(editing||catManual)return;
+  const cat=lastCatFor(gastos,e.target.value);
+  if(cat&&CATS.some(c=>c[0]===cat)){selCat=cat;[...$("chips").children].forEach(c=>c.setAttribute("aria-pressed",String(c.textContent===selCat)));validate()}
 });
 $("fab").onclick=()=>openSheet(null);
 $("close").onclick=closeSheet;$("scrim").onclick=()=>{if(!$("catSheet").hidden)closeCatsSheet();else closeSheet()};
@@ -189,12 +197,12 @@ $("editCatsBtn").onclick=()=>openCatsSheet();
 $("closeCatsBtn").onclick=closeCatsSheet;
 $("addCatBtn").onclick=()=>{
   const next=ALL_COLORS.find(c=>!CATS.some(x=>x[1]===c))||ALL_COLORS[CATS.length%ALL_COLORS.length];
-  CATS.push(["Nueva categoría",next]);saveCats();buildChips();openCatsSheet();
+  CATS.push([uniqueName("Nueva categoría",CATS.map(c=>c[0])),next]);saveCats();buildChips();openCatsSheet();
   setTimeout(()=>{const ins=$("catList").querySelectorAll(".cat-name");const l=ins[ins.length-1];l.select();l.focus()},50);
 };
-$("prev").onclick=()=>{month=shiftMonth(month,-1);filter=null;render()};
-$("next").onclick=()=>{month=shiftMonth(month,1);filter=null;render()};
-$("statsToggle").onclick=()=>{statsMode=!statsMode;filter=null;searchQuery="";$("searchInput").value="";$("searchWrap").classList.remove("open");$("statsToggle").textContent=statsMode?"Mes":"Año";render()};
+$("prev").onclick=()=>{if(statsMode){statsYear--;render();return}month=shiftMonth(month,-1);filter=null;render()};
+$("next").onclick=()=>{if(statsMode){statsYear++;render();return}month=shiftMonth(month,1);filter=null;render()};
+$("statsToggle").onclick=()=>{statsMode=!statsMode;statsYear=+month.slice(0,4);filter=null;searchQuery="";$("searchInput").value="";$("searchWrap").classList.remove("open");$("statsToggle").textContent=statsMode?"Mes":"Año";render()};
 $("searchToggle").onclick=()=>{const open=$("searchWrap").classList.toggle("open");if(!open){searchQuery="";$("searchInput").value="";render()}else setTimeout(()=>$("searchInput").focus(),50)};
 $("searchInput").addEventListener("input",e=>{searchQuery=e.target.value.trim();render()});
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("sheet").hidden)closeSheet()});
@@ -205,20 +213,29 @@ function openCatsSheet(){
     let catName=name;
     const used=gastos.some(g=>g.categoria===catName);
     const row=document.createElement("div");row.className="cat-edit-row";
-    row.innerHTML=`<span class="dot cat-dot" style="background:var(${cv})"></span><input class="cat-name" value=""><button class="cat-del" ${used?"disabled":""}>✕</button>`;
+    row.innerHTML=`<span class="dot cat-dot" style="background:var(${cv})"></span><input class="cat-name" value=""><button class="cat-del" ${used||CATS.length<=1?"disabled":""}>✕</button>`;
     const inp=row.querySelector(".cat-name");inp.value=catName;
     const delBtn=row.querySelector(".cat-del");
     inp.addEventListener("change",async()=>{
-      const newName=inp.value.trim();if(!newName||newName===catName)return;
+      const newName=inp.value.trim().slice(0,LIMITS.categoria);if(!newName){inp.value=catName;return}if(newName===catName)return;
       const old=catName;
-      const cat=CATS.find(x=>x[0]===old);if(cat)cat[0]=newName;
+      // Si ya existe una categoría con ese nombre, se fusionan
+      if(CATS.some(x=>x[0]===newName))CATS=CATS.filter(x=>x[0]!==old);
+      else{const cat=CATS.find(x=>x[0]===old);if(cat)cat[0]=newName}
       catName=newName;saveCats();
-      if(col){const b=db.batch();gastos.filter(g=>g.categoria===old).forEach(g=>b.update(col.doc(g.id),{categoria:newName}));await b.commit()}
-      else{gastos.forEach(g=>{if(g.categoria===old)g.categoria=newName});persist()}
+      if(filter===old)filter=newName;
+      const ids=gastos.filter(g=>g.categoria===old).map(g=>g.id);
+      gastos.forEach(g=>{if(g.categoria===old)g.categoria=newName});persist();
+      if(col){
+        const pend=new Set(loadPending()||[]);
+        const up=ids.filter(id=>!pend.has(id));
+        const ops=up.map(id=>b=>b.set(col.doc(id),{categoria:newName},{merge:true}));
+        if(ops.length){addPending(up);commitOps(ops).then(()=>dropPending(up)).catch(()=>toast("No se pudo cambiar la categoría en la nube"))}
+      }else addPending(ids);
       buildChips();render();openCatsSheet();
     });
     delBtn.onclick=()=>{
-      if(gastos.some(g=>g.categoria===catName))return;
+      if(gastos.some(g=>g.categoria===catName)||CATS.length<=1)return; // la última no se borra
       if(!delBtn.classList.contains("armed")){delBtn.classList.add("armed");delBtn.textContent="¿Seguro?";return}
       const idx=CATS.findIndex(x=>x[0]===catName);
       if(idx!==-1)CATS.splice(idx,1);
@@ -252,9 +269,21 @@ $("csvBtn").onclick=()=>{
 $("importFile").onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
   try{const data=JSON.parse(await f.text());if(!Array.isArray(data))throw 0;
-    const valid=data.filter(g=>typeof g.importe==="number");
-    if(col){const b=db.batch();valid.forEach(g=>{const{id,...d}=g;b.set(col.doc(id||"g"+Date.now()),d)});await b.commit();toast(`Importados ${valid.length} gastos`)}
-    else{gastos=valid;persist();render();toast(`Importados ${valid.length} gastos`)}}
+    const valid=data.filter(g=>g&&typeof g.importe==="number"&&typeof g.categoria==="string"&&typeof g.fecha==="string")
+      .map((g,i)=>{const x=fixGasto({concepto:String(g.concepto||"").slice(0,LIMITS.concepto),importe:g.importe,categoria:g.categoria.trim(),fecha:g.fecha});
+        if(typeof g.ts==="number")x.ts=g.ts;if(g.importado===true)x.importado=true;
+        x.id=g.id?String(g.id):(col?col.doc().id:`g${Date.now()}_${i}`);return x}).filter(g=>validGasto((({id,...d})=>d)(g)));
+    // Si alguno se había borrado, deja de estar "borrado"
+    {const ids=new Set(valid.map(g=>g.id));try{localStorage.setItem(DEL_KEY,JSON.stringify(loadDeleted().filter(id=>!ids.has(id))))}catch(e){}}
+    // Categorías que vengan en la copia y no existan
+    valid.forEach(g=>{if(!CATS.some(c=>c[0]===g.categoria)){const used=new Set(CATS.map(c=>c[1]));CATS.push([g.categoria,ALL_COLORS.find(c=>!used.has(c))||"--c8"])}});
+    saveCats();buildChips();
+    // Se mezcla con lo que hay (no se borra nada); si un gasto ya existe, se sustituye
+    const m=new Map(gastos.map(g=>[g.id,g]));valid.forEach(g=>m.set(g.id,g));gastos=[...m.values()];persist();render();
+    if(col){const ids=valid.map(g=>g.id);addPending(ids);
+      commitOps(valid.map(g=>b=>{const{id,...d}=g;b.set(col.doc(id),d)})).then(()=>dropPending(ids)).catch(()=>toast("No se pudo subir la copia a la nube"))}
+    else addPending(valid.map(g=>g.id));
+    toast(`Importados ${valid.length} gastos`)}
   catch(err){toast("Ese archivo no es una copia de Mis Gastos")}
   e.target.value="";
 };
@@ -263,14 +292,15 @@ $("importFile").onchange=async e=>{
 const seedGastos=()=>SEED.map((s,i)=>({id:"oct"+String(i+1).padStart(2,"0"),concepto:s[0],importe:s[1],categoria:s[2],fecha:s[3]||"2026-10-01",importado:true,ts:i+1}));
 
 function renderStats(){
-  const yr=new Date().getFullYear();
+  const yr=statsYear,curYr=new Date().getFullYear();
+  const years=gastos.map(g=>+(g.fecha||"").slice(0,4)).filter(Boolean);
   $("monthLabel").textContent="Resumen "+yr;
-  $("heroLabel").textContent="Gastado este año";
-  $("prev").disabled=true;$("next").disabled=true;
-  const all=gastos.filter(g=>(g.fecha||"").startsWith(yr));
+  $("heroLabel").textContent=yr===curYr?"Gastado este año":"Gastado en "+yr;
+  $("prev").disabled=!years.some(y=>y<yr);$("next").disabled=yr>=curYr;
+  const all=gastos.filter(g=>(g.fecha||"").startsWith(yr+"-"));
   const tot=all.reduce((s,g)=>s+g.importe,0);
   $("total").innerHTML=`${eur(tot)}<small>€</small>`;
-  $("sub").textContent=all.length?`${all.length} gastos · ${eur(tot/12)} € al mes de media`:"Sin gastos este año";
+  $("sub").textContent=all.length?`${all.length} gastos · ${eur(tot/Math.max(1,monthsElapsed(yr)))} € al mes de media`:"Sin gastos este año";
   const byCat={};all.forEach(g=>byCat[g.categoria]=(byCat[g.categoria]||0)+g.importe);
   const rows=Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
   $("stack").innerHTML=rows.map(([c,v])=>`<i style="flex:${v};background:${color(c)}"></i>`).join("");
@@ -320,7 +350,7 @@ function renderSearch(){
   });
   $("listTitle").firstChild.textContent=`"${searchQuery}"`;
   const list=$("list");
-  if(!results.length){list.innerHTML=`<div class="empty">Sin resultados para "${searchQuery}".</div>`;return}
+  if(!results.length){list.innerHTML=`<div class="empty"></div>`;list.firstChild.textContent=`Sin resultados para "${searchQuery}".`;return}
   list.innerHTML="";
   results.forEach(g=>{
     const b=document.createElement("button");b.className="item";
@@ -364,7 +394,11 @@ if(auth){
       setAuthUI(true);
       // Si el UID cambió, limpiar datos del usuario anterior
       const prevUid=localStorage.getItem(UID_KEY);
-      if(prevUid&&prevUid!==user.uid){clearLocalData();gastos=[];render()}
+      if(prevUid&&prevUid!==user.uid){
+        clearLocalData();savePending([]);gastos=[];
+        // No llevar las categorías de la otra cuenta: se cargan las de esta (o las de serie)
+        CATS=DEFAULT_CATS.map(c=>[...c]);try{localStorage.setItem(CATS_KEY,JSON.stringify(CATS))}catch(e){}
+        buildChips();render()}
       localStorage.setItem(UID_KEY,user.uid);
       col=db.collection("users").doc(user.uid).collection("gastos");
       $("status").textContent="";
@@ -386,22 +420,27 @@ if(auth){
   function listen(user){
       stopListen();
       listening=true;
-      unsub=col.onSnapshot(snap=>{
+      unsub=col.onSnapshot({includeMetadataChanges:true},snap=>{
         retryDelay=3000;
-        const serverIds=new Set(snap.docs.map(d=>d.id));
         const deleted=loadDeleted();
-        const toDelete=deleted.filter(id=>serverIds.has(id));
         const local=load()||[];
-        const pending=local.filter(g=>g.id&&!serverIds.has(g.id)&&!deleted.includes(g.id));
-        if(toDelete.length||pending.length){
-          const b=db.batch();
-          toDelete.forEach(id=>b.delete(col.doc(id)));
-          pending.forEach(g=>{const{id,...d}=g;b.set(col.doc(id),d)});
-          b.commit().catch(()=>{});
-          if(toDelete.length) localStorage.setItem(DEL_KEY,JSON.stringify(deleted.filter(id=>!toDelete.includes(id))));
+        if(!snap.metadata.fromCache){ // solo con datos reales del servidor
+          const serverIds=new Set(snap.docs.map(d=>d.id));
+          const toDelete=deleted.filter(id=>serverIds.has(id));
+          const pend=new Set(loadPending()||[]);
+          // (las que ya se están subiendo no se repiten)
+          const up=local.filter(g=>g&&g.id&&pend.has(g.id)&&!deleted.includes(g.id)&&!syncing.has(g.id)&&validGasto((({id,...d})=>d)(g)));
+          const del=toDelete.filter(id=>!syncing.has(id));
+          const ops=[...del.map(id=>b=>b.delete(col.doc(id))),...up.map(g=>b=>{const{id,...d}=g;b.set(col.doc(id),d)})];
+          if(ops.length){const ids=[...del,...up.map(g=>g.id)];ids.forEach(id=>syncing.add(id));
+            commitOps(ops).then(()=>dropPending(up.map(g=>g.id))).catch(()=>{}).then(()=>ids.forEach(id=>syncing.delete(id)))}
+          // Los borrados que ya no están en el servidor ya no hace falta recordarlos
+          try{localStorage.setItem(DEL_KEY,JSON.stringify(deleted.filter(id=>serverIds.has(id))))}catch(e){}
         }
-        // Renderizar siempre desde el servidor, no bloquear por pendientes
         gastos=snap.docs.map(d=>fixGasto({id:d.id,...d.data()})).filter(g=>!deleted.includes(g.id));
+        // Que los pendientes de subir no desaparezcan de la pantalla mientras se suben
+        const pend=new Set(loadPending()||[]);
+        if(pend.size){const ids=new Set(gastos.map(g=>g.id));local.forEach(g=>{if(g&&pend.has(g.id)&&!ids.has(g.id)&&!deleted.includes(g.id))gastos.push(g)})}
         persist();render();
         $("status").textContent="";
       },err=>{
@@ -428,21 +467,13 @@ if(auth){
 /* Atajo de iPhone: ?importe=12,50&concepto=Café&cat=Cafés y snacks
    Con importe y categoría válidos guarda directamente; si falta algo, abre el formulario relleno. */
 (function fromShortcut(){
-  const p=new URLSearchParams(location.search);
-  if(!p.has("importe")&&!p.has("concepto"))return;
+  const sc=parseShortcut(location.search,CATS,gastos);if(!sc)return;
   history.replaceState(null,"",location.pathname); // evita duplicar al recargar
-  const imp=parseAmt(p.get("importe")||"");
-  const concepto=(p.get("concepto")||"").trim();
-  const catQ=norm((p.get("cat")||p.get("categoria")||"").trim());
-  let cat=catQ?(CATS.find(c=>norm(c[0])===catQ)||CATS.find(c=>norm(c[0]).startsWith(catQ))||[])[0]:null;
-  if(!cat&&concepto){const m=gastos.find(g=>g.concepto&&norm(g.concepto)===norm(concepto));if(m)cat=m.categoria}
   openSheet(null);
-  if(imp>0)$("importe").value=eur(imp);
-  $("concepto").value=concepto;
-  if(cat){selCat=cat;[...$("chips").children].forEach(c=>c.setAttribute("aria-pressed",String(c.textContent===selCat)))}
+  if(sc.importe>0)$("importe").value=eurInput(sc.importe);
+  $("concepto").value=sc.concepto;
+  if(sc.cat){selCat=sc.cat;[...$("chips").children].forEach(c=>c.setAttribute("aria-pressed",String(c.textContent===selCat)))}
   validate();
-  if(imp>0&&cat&&p.get("confirmar")!=="1"){
-    $("form").requestSubmit();
-  }
+  if(sc.importe>0&&sc.importe<LIMITS.importe&&sc.cat&&!sc.confirmar)$("form").requestSubmit();
 })();
 if("serviceWorker" in navigator){navigator.serviceWorker.register("sw.js").catch(()=>{})}

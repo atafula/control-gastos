@@ -13,21 +13,332 @@
 <body>
 <h1>Tests — Mis Gastos</h1>
 <div id="out"></div>
-<div id="summary"></div>
+<div id="summary">Ejecutando…</div>
+<script src="utils.js"></script>
 <script>
-// ── funciones puras copiadas de app.js ──────────────────────────────────────
-const DEFAULT_CATS=[
-  ["Comida fuera","--c1"],["Súper","--c3"],["Regalos","--c2"],["Salidas y fiesta","--c4"],
-  ["Transporte","--c6"],["Cafés y snacks","--c5"],["Suscripciones","--c0"],["Tecnología","--c7"],["Otros","--c8"]];
-let CATS=[...DEFAULT_CATS];
-const eur=v=>v.toLocaleString("es-ES",{minimumFractionDigits:2,maximumFractionDigits:2});
-const pad=n=>String(n).padStart(2,"0");
-const parseAmt=s=>{const v=parseFloat(String(s).replace(/\s|€/g,"").replace(",","."));return isFinite(v)?Math.round(v*100)/100:NaN};
+/* ═══════════════════════════════════════════════════════════════════════════
+   PRUEBAS DE LA APP COMPLETA
+   La app se abre dentro de esta página con un almacenamiento falso y un
+   Firebase simulado: no toca tus gastos reales ni tu Firebase.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+// Almacenamiento falso (sustituye a localStorage dentro de la app de prueba)
+const FAKE_STORAGE=`(function(){const d=Object.assign({},window.__cfg.store||{});
+const ls={getItem:k=>Object.prototype.hasOwnProperty.call(d,k)?d[k]:null,setItem:(k,v)=>{d[k]=String(v)},removeItem:k=>{delete d[k]},
+clear:()=>{Object.keys(d).forEach(k=>delete d[k])},key:i=>Object.keys(d)[i]??null,get length(){return Object.keys(d).length}};
+try{Object.defineProperty(window,"localStorage",{value:ls,configurable:true})}catch(e){}
+window.__store=d;window.__safe=(window.localStorage===ls);})();`;
+
+// Firebase simulado: auth + Firestore en memoria (con "otro dispositivo" para las pruebas)
+const FAKE_FIREBASE=`(function(){
+const S=window.__db=JSON.parse(JSON.stringify(window.__cfg.db||{}));const subs=[];
+const clone=o=>JSON.parse(JSON.stringify(o));
+const notify=()=>setTimeout(()=>subs.slice().forEach(f=>f()),5);
+let n=0;const rid=()=>"srv"+(n++)+"x"+Math.random().toString(36).slice(2,8);
+const kids=p=>{const pre=p.join("/")+"/",d=p.length+1;return [...new Set([...Object.keys(S),...Object.keys(L)])].filter(k=>k.startsWith(pre)&&k.split("/").length===d&&view(k))};
+const OFF=!!window.__cfg.offline,L={};// sin conexión: lo escrito queda en memoria (L) y nunca llega al servidor
+const view=k=>k in L?L[k]:S[k];
+function docRef(p){const k=p.join("/");return{id:p[p.length-1],
+ set(d,o){const v=o&&o.merge?Object.assign({},view(k)||{},clone(d)):clone(d);if(OFF){L[k]=v;notify();return new Promise(()=>{})}S[k]=v;notify();return Promise.resolve()},
+ update(d){if(!S[k])return Promise.reject({code:"not-found"});Object.assign(S[k],clone(d));notify();return Promise.resolve()},
+ delete(){if(OFF){L[k]=null;notify();return new Promise(()=>{})}delete S[k];notify();return Promise.resolve()},collection:c=>colRef([...p,c]),
+ onSnapshot(a,b){const cb=typeof a==="function"?a:b;const f=()=>cb({exists:!!view(k),data:()=>view(k)&&clone(view(k))});subs.push(f);setTimeout(f,0);return()=>subs.splice(subs.indexOf(f),1)}}}
+function colRef(p){return{doc:id=>docRef([...p,id||rid()]),add(d){const r=docRef([...p,rid()]);return r.set(d).then(()=>r)},
+ onSnapshot(a,b){const cb=typeof a==="function"?a:b;const c=window.__cfg.cache;
+  if(c)setTimeout(()=>cb({docs:c.map(x=>({id:x.id,data:()=>clone(x)})),metadata:{fromCache:true}}),0);
+  const f=()=>cb({docs:kids(p).map(k=>{const v=clone(view(k));return{id:k.split("/").pop(),data:()=>clone(v)}}),metadata:{fromCache:OFF}});
+  subs.push(f);setTimeout(f,20);return()=>subs.splice(subs.indexOf(f),1)}}}
+const fs={enablePersistence:()=>Promise.resolve(),collection:c=>colRef([c]),
+ batch(){const o=[];return{set:(r,d,x)=>o.push(()=>r.set(d,x)),update:(r,d)=>o.push(()=>r.update(d)),delete:r=>o.push(()=>r.delete()),commit:()=>{o.forEach(f=>f());return OFF?new Promise(()=>{}):Promise.resolve()}}}};
+const uid=window.__cfg.user;const user=uid?{uid,refreshToken:"r",getIdToken:()=>Promise.resolve("t")}:null;
+const authObj={currentUser:user,onAuthStateChanged(cb){setTimeout(()=>cb(user),5)},getRedirectResult:()=>Promise.resolve(null),signInWithPopup:()=>Promise.resolve()};
+const af=()=>authObj;af.GoogleAuthProvider=function(){this.setCustomParameters=()=>{}};
+window.firebase={initializeApp(){},firestore:()=>fs,auth:af};
+window.__srv={set:(k,v)=>{S[k]=clone(v);notify()},del:k=>{delete S[k];notify()}};})();`;
+
+let SRC=null;
+async function loadSources(){if(SRC)return SRC;
+  const get=f=>fetch(f,{cache:"no-store"}).then(r=>{if(!r.ok)throw new Error("no se pudo cargar "+f);return r.text()});
+  const [html,utils,app]=await Promise.all([get("index.html"),get("utils.js"),get("app.js")]);
+  const doc=new DOMParser().parseFromString(html,"text/html");
+  doc.querySelectorAll("script").forEach(s=>s.remove());
+  const head=[...doc.head.querySelectorAll("style,link[rel=stylesheet]")].map(e=>e.outerHTML).join("");
+  return SRC={head,body:doc.body.innerHTML,utils,app};}
+
+// Abre una copia de la app. cfg: {store, db, user, cache, firebase:false}
+async function openApp(cfg={}){
+  const src=await loadSources();
+  const f=document.createElement("iframe");
+  f.style.cssText="position:fixed;left:-10000px;top:0;width:390px;height:844px;border:0";
+  const cfgJson=JSON.stringify({store:{},db:{},user:null,cache:null,...cfg}).replace(/</g,"\\u003c");
+  f.srcdoc=`<!doctype html><html><head><meta charset="utf-8"><base href="${location.href}">${src.head}</head><body>${src.body}`+
+    `<script>window.__cfg=${cfgJson};${FAKE_STORAGE}<\/script>`+
+    (cfg.firebase===false?"":`<script>${FAKE_FIREBASE}<\/script>`)+
+    `<script>if(!window.__safe)throw new Error("almacenamiento no aislado");<\/script>`+
+    `<script>${src.utils}<\/script><script>${src.app}<\/script></body></html>`;
+  document.body.appendChild(f);
+  await new Promise(r=>f.onload=r);
+  const w=f.contentWindow;if(!w.__safe){f.remove();throw new Error("este navegador no permite aislar los datos; pruebas de la app omitidas")}
+  const errors=[];w.addEventListener("error",e=>errors.push(e.message+" @ "+(e.error&&e.error.stack||"").split("\n").slice(0,3).join(" | ")));w.addEventListener("unhandledrejection",e=>errors.push(String(e.reason&&e.reason.message||e.reason)));
+  await sleep(150);
+  const d=w.document,$=id=>d.getElementById(id);
+  const A={w,d,$,errors,
+    close:()=>f.remove(),
+    wait:(ms=120)=>sleep(ms),
+    store:()=>w.__store,
+    snapshotStore:()=>Object.assign({},w.__store), // para "cerrar y volver a abrir" la app
+    db:()=>w.__db,
+    srv:()=>w.__srv,
+    json:k=>{try{return JSON.parse(w.__store[k])}catch(e){return null}},
+    local:()=>A.json("mis-gastos-v3")||[],
+    cats:()=>A.json("mis-gastos-cats")||DEFAULT_CATS, // si no se han tocado, la app usa las de serie
+    items:()=>[...d.querySelectorAll("#list .item .c")].map(e=>e.textContent),
+    text:id=>$(id).textContent,
+    click:async(el,ms)=>{(typeof el==="string"?$(el):el).click();await sleep(ms??80)},
+    type:async(id,v)=>{const e=$(id);e.value=v;e.dispatchEvent(new w.Event("input",{bubbles:true}));e.dispatchEvent(new w.Event("change",{bubbles:true}));await sleep(30)},
+    chip:async name=>{const c=[...d.querySelectorAll("#chips .chip")].find(c=>c.textContent===name);if(!c)throw new Error("no hay chip "+name);c.click();await sleep(30)},
+    pressed:()=>[...d.querySelectorAll("#chips .chip[aria-pressed=true]")].map(c=>c.textContent).join(),
+    item:name=>[...d.querySelectorAll("#list .item")].find(i=>i.querySelector(".c").textContent===name),
+    // Añade un gasto con el formulario
+    add:async(importe,cat,concepto="",fecha)=>{await A.click("fab");await A.type("importe",importe);if(concepto)await A.type("concepto",concepto);
+      if(cat)await A.chip(cat);if(fecha)await A.type("fecha",fecha);A.$("form").requestSubmit();await sleep(350)},
+    edit:async(name,changes)=>{await A.click(A.item(name));for(const[k,v]of Object.entries(changes))await A.type(k,v);A.$("form").requestSubmit();await sleep(350)},
+    remove:async name=>{await A.click(A.item(name));await A.click("del");await A.click("del",350)},
+    catInputs:()=>[...d.querySelectorAll("#catList .cat-name")],
+    renameCat:async(from,to)=>{await A.click("editCatsBtn");const i=A.catInputs().find(i=>i.value===from);if(!i)throw new Error("no hay categoría "+from);
+      i.value=to;i.dispatchEvent(new w.Event("change"));await sleep(250);await A.click("closeCatsBtn",300)},
+    importFile:async data=>{const dt=new w.DataTransfer();dt.items.add(new w.File([JSON.stringify(data)],"copia.json",{type:"application/json"}));
+      const i=$("importFile");i.files=dt.files;i.dispatchEvent(new w.Event("change"));await sleep(400)},
+  };
+  return A;}
+
+// Ejecuta una prueba en una app nueva y la cierra
+async function T(name,cfg,fn){let A;try{A=await openApp(cfg);await fn(A);
+    if(A.errors.length)eq(name+" — sin errores JS",A.errors,[]);}
+  catch(e){fail++;const d=document.createElement("div");d.className="fail";d.textContent="✗ "+name+" → "+e.message;out.appendChild(d)}
+  finally{A&&A.close()}}
+
+const TODAY=todayISO(),MONTH=TODAY.slice(0,7),YEAR=+TODAY.slice(0,4);
+const G=(id,concepto,importe,categoria,fecha=TODAY,ts=1)=>({id,concepto,importe,categoria,fecha,ts});
+const store=(gastos,extra={})=>({"mis-gastos-v3":JSON.stringify(gastos),...extra});
+const docs=(uid,list)=>Object.fromEntries(list.map(({id,...d})=>[`users/${uid}/gastos/${id}`,d]));
+const LOGGED=(uid)=>({"mis-gastos-uid":uid,"mis-gastos-pending":"[]"});
+
+async function runAppTests(){
+  // Comprobación de seguridad: la app de prueba no debe ver los datos reales
+  try{const A=await openApp({firebase:false});A.close()}
+  catch(e){section("app completa");const d=document.createElement("div");d.className="fail";d.textContent="⚠ "+e.message;out.appendChild(d);fail++;return}
+
+  section("app — sin sesión (solo en el móvil)");
+  await T("arranca vacía",{firebase:false},async A=>{
+    ok("mensaje de lista vacía",A.text("list").includes("Aquí aparecerán"));
+    eq("total 0",A.text("total").startsWith("0,00"),true);});
+  await T("añadir un gasto",{firebase:false},async A=>{
+    await A.add("12,50","Súper","Mercadona");
+    eq("aparece en la lista",A.items(),["Mercadona"]);
+    ok("total 12,50",A.text("total").startsWith("12,50"));
+    eq("guardado en el móvil",A.local().map(g=>[g.concepto,g.importe,g.categoria,g.fecha]),[["Mercadona",12.5,"Súper",TODAY]]);
+    eq("queda pendiente de subir",A.json("mis-gastos-pending").length,1);});
+  await T("sin concepto muestra la categoría",{firebase:false},async A=>{await A.add("3","Transporte");eq("lista",A.items(),["Transporte"]);});
+  await T("botón Guardar se activa solo si es válido",{firebase:false},async A=>{
+    await A.click("fab");ok("vacío → desactivado",A.$("save").disabled);
+    await A.type("importe","5");ok("sin categoría → desactivado",A.$("save").disabled);
+    await A.chip("Otros");ok("con importe y categoría → activo",!A.$("save").disabled);
+    await A.type("importe","0");ok("importe 0 → desactivado",A.$("save").disabled);
+    await A.type("importe","abc");ok("texto → desactivado",A.$("save").disabled);
+    await A.type("importe","1000000");ok("1.000.000 → desactivado",A.$("save").disabled);
+    await A.type("importe","999999,99");ok("999.999,99 → activo",!A.$("save").disabled);});
+  await T("concepto larguísimo se recorta a 200",{firebase:false},async A=>{await A.add("1","Otros","x".repeat(300));eq("longitud",A.local()[0].concepto.length,200);});
+  await T("editar un gasto",{store:store([G("a","Pan",2,"Súper",TODAY,1000)])},async A=>{
+    await A.edit("Pan",{importe:"2,75",concepto:"Pan integral"});
+    const g=A.local()[0];eq("importe",g.importe,2.75);eq("concepto",g.concepto,"Pan integral");eq("conserva la hora",g.ts,1000);});
+  await T("editar 12.345 € no lo estropea",{firebase:false,store:store([G("a","Coche",12345,"Otros")])},async A=>{
+    await A.click(A.item("Coche"));eq("campo sin punto de miles",A.$("importe").value,"12345,00");
+    A.$("form").requestSubmit();await A.wait(300);eq("importe intacto",A.local()[0].importe,12345);});
+  await T("escribir 1.234,56",{firebase:false},async A=>{await A.add("1.234,56","Otros","Tele");eq("importe",A.local()[0].importe,1234.56);});
+  await T("borrar pide confirmación",{firebase:false,store:store([G("a","Pan",2,"Súper")])},async A=>{
+    await A.click(A.item("Pan"));await A.click("del");eq("primer toque: pregunta",A.$("del").textContent,"¿Seguro?");
+    eq("aún no borrado",A.local().length,1);await A.click("del",300);eq("borrado",A.local().length,0);ok("lista vacía",A.text("list").includes("Aquí aparecerán"));});
+  await T("orden: más reciente primero",{firebase:false,store:store([G("a","Mañana",1,"Otros",TODAY,1000),G("b","Tarde",1,"Otros",TODAY,2000),G("c","Ayer",1,"Otros",shiftMonth(MONTH,0)+"-01",5000)])},async A=>{
+    const it=A.items();eq("Tarde antes que Mañana",it.indexOf("Tarde")<it.indexOf("Mañana"),true);
+    if(TODAY.slice(8)!=="01")eq("día 1 al final",it[it.length-1],"Ayer");});
+  await T("título del mes: solo la primera en mayúscula",{firebase:false},async A=>{
+    const n=monthName(MONTH);const want=n.charAt(0).toUpperCase()+n.slice(1);
+    eq("texto",A.text("monthLabel"),want);eq("sin mayúsculas forzadas",A.w.getComputedStyle(A.$("monthLabel")).textTransform,"none");
+    ok("\"de\" en minúscula",A.$("monthLabel").innerText.includes(" de "));});
+  await T("navegar entre meses",{firebase:false,store:store([G("a","Ahora",5,"Otros"),G("b","Antes",7,"Otros",shiftMonth(MONTH,-1)+"-15")])},async A=>{
+    ok("siguiente desactivado en el mes actual",A.$("next").disabled);eq("solo el de este mes",A.items(),["Ahora"]);
+    await A.click("prev");eq("mes anterior",A.items(),["Antes"]);ok("total 7",A.text("total").startsWith("7,00"));
+    await A.click("next");eq("vuelve",A.items(),["Ahora"]);});
+  await T("media diaria del mes",{firebase:false,store:store([G("a","x",31,"Otros",shiftMonth(MONTH,-1)+"-10")])},async A=>{
+    await A.click("prev");const [y,m]=shiftMonth(MONTH,-1).split("-").map(Number);const days=new Date(y,m,0).getDate();
+    ok("31 € / "+days+" días",A.text("sub").includes(eur(31/days)));});
+  await T("filtrar por categoría",{firebase:false,store:store([G("a","Pan",2,"Súper"),G("b","Bus",1,"Transporte")])},async A=>{
+    const row=[...A.d.querySelectorAll(".cat-row")].find(r=>r.textContent.includes("Transporte"));
+    await A.click(row);eq("solo Transporte",A.items(),["Bus"]);await A.click([...A.d.querySelectorAll(".cat-row")].find(r=>r.textContent.includes("Transporte")));
+    eq("quitar filtro",A.items().length,2);});
+  await T("porcentajes por categoría",{firebase:false,store:store([G("a","Pan",75,"Súper"),G("b","Bus",25,"Transporte")])},async A=>{
+    const t=[...A.d.querySelectorAll(".cat-row")].map(r=>r.textContent);ok("Súper 75%",t.some(x=>x.includes("Súper")&&x.includes("75%")));ok("Transporte 25%",t.some(x=>x.includes("Transporte")&&x.includes("25%")));});
+  await T("buscar ignora tildes y mayúsculas",{firebase:false,store:store([G("a","Café",1,"Cafés y snacks"),G("b","Pan",2,"Súper",shiftMonth(MONTH,-3)+"-01")])},async A=>{
+    await A.click("searchToggle");await A.type("searchInput","CAFE");eq("encuentra Café",A.items(),["Café"]);
+    await A.type("searchInput","pan");eq("busca en todos los meses",A.items(),["Pan"]);
+    await A.type("searchInput","super");eq("busca por categoría",A.items(),["Pan"]);});
+  await T("buscar no ejecuta HTML",{firebase:false},async A=>{
+    await A.click("searchToggle");await A.type("searchInput",'<img src=x onerror="window.__hack=1">');await A.wait(200);
+    ok("no se ejecuta",!A.w.__hack);ok("se muestra como texto",A.text("list").includes("<img"));});
+  await T("resumen del año",{firebase:false,store:store([G("a","x",100,"Otros",YEAR+"-01-10"),G("b","y",50,"Súper",(YEAR-1)+"-06-01")])},async A=>{
+    await A.click("statsToggle");ok("título",A.text("monthLabel").includes(YEAR));ok("total año",A.text("total").startsWith("100,00"));
+    ok("media entre meses transcurridos",A.text("sub").includes(eur(100/monthsElapsed(YEAR))));
+    ok("siguiente desactivado",A.$("next").disabled);ok("anterior activo (hay "+(YEAR-1)+")",!A.$("prev").disabled);
+    await A.click("prev");ok("año anterior",A.text("monthLabel").includes(YEAR-1));ok("total año anterior",A.text("total").startsWith("50,00"));
+    ok("media entre 12",A.text("sub").includes(eur(50/12)));ok("no hay años más antiguos",A.$("prev").disabled);});
+  await T("del resumen a un mes",{firebase:false,store:store([G("a","x",100,"Otros",YEAR+"-01-10")])},async A=>{
+    await A.click("statsToggle");await A.click(A.d.querySelector("#list .item"));eq("abre enero",A.items(),["x"]);ok("vuelve al modo mes",A.text("statsToggle")==="Año");});
+
+  section("app — categorías (nombres, mínimo y filtro)");
+  await T("añadir dos categorías seguidas: nombres distintos",{firebase:false},async A=>{
+    await A.click("editCatsBtn");await A.click("addCatBtn",120);await A.click("addCatBtn",120);
+    const n=A.catInputs().map(i=>i.value).slice(-2);eq("nombres",n,["Nueva categoría","Nueva categoría 2"]);
+    const last=A.catInputs().pop();last.value="Gimnasio";last.dispatchEvent(new A.w.Event("change"));await A.wait(250);
+    eq("renombra la que toca",A.catInputs().map(i=>i.value).slice(-2),["Nueva categoría","Gimnasio"]);});
+  await T("no se puede borrar la última categoría",{firebase:false},async A=>{
+    await A.click("editCatsBtn");
+    for(let i=0;i<30;i++){const d=A.d.querySelector("#catList .cat-del:not([disabled])");if(!d)break;d.click();await A.wait(20);
+      const s=A.d.querySelector("#catList .cat-del.armed");if(s){s.click();await A.wait(40)}}
+    eq("queda una",A.cats().length,1);ok("su botón está desactivado",A.d.querySelector("#catList .cat-del").disabled);
+    await A.click("closeCatsBtn",300);await A.add("1",A.cats()[0][0]);eq("se puede seguir añadiendo",A.local().length,1);});
+  await T("categorías repetidas en el móvil se limpian",{firebase:false,store:{"mis-gastos-cats":JSON.stringify([["A","--c1"],["A","--c2"],["B","--c3"]])}},async A=>{
+    eq("chips",[...A.d.querySelectorAll("#chips .chip")].map(c=>c.textContent),["A","B"]);});
+  await T("guardar con un filtro de otra categoría lo quita",{firebase:false,store:store([G("a","Pan",2,"Súper")])},async A=>{
+    await A.click(A.d.querySelector(".cat-row"));eq("filtro puesto",A.items(),["Pan"]);
+    await A.add("3","Transporte","Bus");ok("se ve el nuevo",A.items().includes("Bus"));eq("título",A.$("listTitle").firstChild.textContent,"Movimientos");});
+  await T("guardar un gasto de otro mes salta a ese mes",{firebase:false},async A=>{
+    const prev=shiftMonth(MONTH,-2);await A.add("5","Otros","Viejo",prev+"-10");
+    ok("muestra ese mes",A.text("monthLabel").toLowerCase()===monthName(prev).toLowerCase());eq("y el gasto",A.items(),["Viejo"]);});
+  await T("guardar con sesión de otro mes salta a ese mes",{user:"u",store:LOGGED("u")},async A=>{
+    await A.wait(150);const prev=shiftMonth(MONTH,-2);await A.add("5","Otros","Viejo",prev+"-10");await A.wait(150);
+    ok("muestra ese mes",A.text("monthLabel").toLowerCase()===monthName(prev).toLowerCase());eq("y el gasto",A.items(),["Viejo"]);});
+  await T("guardar con el filtro de esa categoría lo mantiene",{firebase:false,store:store([G("a","Pan",2,"Súper")])},async A=>{
+    await A.click(A.d.querySelector(".cat-row"));await A.add("3","Súper","Leche");eq("sigue filtrado",A.$("listTitle").firstChild.textContent,"Súper");ok("se ve",A.items().includes("Leche"));});
+  await T("guardar con sesión y filtro de otra categoría",{user:"u",store:LOGGED("u"),db:docs("u",[G("s1","Pan",2,"Súper")])},async A=>{
+    await A.wait(150);await A.click(A.d.querySelector(".cat-row"));await A.add("3","Transporte","Bus");await A.wait(150);ok("se ve el nuevo",A.items().includes("Bus"));});
+
+  section("app — categorías");
+  await T("añadir categoría",{firebase:false},async A=>{
+    const n=A.cats().length;await A.click("editCatsBtn");await A.click("addCatBtn",150);
+    eq("una más",A.cats().length,n+1);await A.click("closeCatsBtn",300);ok("aparece en el formulario",[...A.d.querySelectorAll("#chips .chip")].some(c=>c.textContent==="Nueva categoría"));});
+  await T("renombrar actualiza los gastos",{firebase:false,store:store([G("a","Pan",2,"Súper")])},async A=>{
+    await A.renameCat("Súper","Supermercado");eq("gasto",A.local()[0].categoria,"Supermercado");ok("lista de categorías",A.cats().some(c=>c[0]==="Supermercado")&&!A.cats().some(c=>c[0]==="Súper"));});
+  await T("renombrar con el filtro puesto",{firebase:false,store:store([G("a","Pan",2,"Súper")])},async A=>{
+    await A.click(A.d.querySelector(".cat-row"));await A.renameCat("Súper","Super");eq("sigue viéndose",A.items(),["Pan"]);eq("título",A.$("listTitle").firstChild.textContent,"Super");});
+  await T("renombrar a una existente las fusiona",{firebase:false,store:store([G("a","Pan",2,"Súper"),G("b","Bus",1,"Transporte")])},async A=>{
+    await A.renameCat("Transporte","Súper");eq("sin duplicados",A.cats().filter(c=>c[0]==="Súper").length,1);ok("Transporte desaparece",!A.cats().some(c=>c[0]==="Transporte"));
+    eq("gasto movido",A.local().find(g=>g.id==="b").categoria,"Súper");});
+  await T("renombrar a vacío no hace nada",{firebase:false},async A=>{await A.renameCat("Otros","   ");ok("sigue Otros",A.cats().some(c=>c[0]==="Otros"));});
+  await T("nombre de categoría máximo 60",{firebase:false},async A=>{await A.renameCat("Otros","x".repeat(80));ok("recortado",A.cats().some(c=>c[0]==="x".repeat(60)));});
+  await T("no se puede borrar una categoría usada",{firebase:false,store:store([G("a","Pan",2,"Súper")])},async A=>{
+    await A.click("editCatsBtn");const row=A.catInputs().find(i=>i.value==="Súper").parentElement;ok("botón desactivado",row.querySelector(".cat-del").disabled);});
+  await T("borrar categoría pide confirmación",{firebase:false},async A=>{
+    await A.click("editCatsBtn");let row=A.catInputs().find(i=>i.value==="Regalos").parentElement;await A.click(row.querySelector(".cat-del"));
+    ok("aún existe",A.cats().some(c=>c[0]==="Regalos"));row=A.catInputs().find(i=>i.value==="Regalos").parentElement;
+    await A.click(row.querySelector(".cat-del"),150);ok("borrada",!A.cats().some(c=>c[0]==="Regalos"));});
+  await T("un color de categoría manipulado no ejecuta código",{firebase:false,store:{"mis-gastos-cats":JSON.stringify([["Otros",'--c1)"><img src=x onerror="window.__hack=1">']])}},async A=>{
+    await A.wait(200);await A.click("fab");await A.click("close");await A.click("editCatsBtn");await A.wait(150);ok("no se ejecuta",!A.w.__hack);eq("color neutro",A.cats()[0]?A.cats()[0][1]:"--c8","--c8");});
+  await T("color manipulado desde la nube",{user:"u",store:LOGGED("u"),db:{"users/u":{cats:[{n:"X",c:'--c1)"><img src=x onerror="window.__hack=1">'}],catsText:"X"}}},async A=>{
+    await A.wait(250);await A.add("1","X");await A.click("editCatsBtn");await A.wait(150);ok("no se ejecuta",!A.w.__hack);});
+  await T("categorías estropeadas en el móvil",{firebase:false,store:{"mis-gastos-cats":'{"roto":1}'}},async A=>{
+    eq("usa las de serie",[...A.d.querySelectorAll("#chips .chip")].length,DEFAULT_CATS.length);await A.add("1","Otros");eq("se puede añadir",A.local().length,1);});
+  await T("categoría automática: la más reciente",{firebase:false,store:store([G("a","Mercadona",1,"Otros",(YEAR-1)+"-01-01"),G("b","Mercadona",1,"Súper",TODAY)])},async A=>{
+    await A.click("fab");await A.type("concepto","mercadona");eq("Súper",A.pressed(),"Súper");});
+  await T("categoría automática respeta la elegida",{firebase:false,store:store([G("b","Mercadona",1,"Súper")])},async A=>{
+    await A.click("fab");await A.chip("Regalos");await A.type("concepto","Mercadona");eq("sigue Regalos",A.pressed(),"Regalos");});
+
+  section("app — copias de seguridad");
+  await T("importar mezcla sin borrar",{firebase:false,store:store([G("a","Pan",2,"Súper")])},async A=>{
+    await A.importFile([{concepto:"I1",importe:1,categoria:"Belleza",fecha:TODAY},{concepto:"I2",importe:2,categoria:"Súper",fecha:TODAY},
+      {concepto:"malo",importe:"x",categoria:"Súper",fecha:TODAY},{concepto:"cero",importe:0,categoria:"Súper",fecha:TODAY}]);
+    const c=A.local().map(g=>g.concepto).sort();eq("Pan + 2 válidos",c,["I1","I2","Pan"]);eq("ids distintos",new Set(A.local().map(g=>g.id)).size,3);
+    ok("crea la categoría Belleza",A.cats().some(c=>c[0]==="Belleza"));});
+  await T("importar la misma copia dos veces no duplica",{firebase:false},async A=>{
+    const c=[G("x1","A",1,"Otros"),G("x2","B",2,"Otros")];await A.importFile(c);await A.importFile(c);eq("2 gastos",A.local().length,2);});
+  await T("archivo que no es una copia",{firebase:false},async A=>{
+    const dt=new A.w.DataTransfer();dt.items.add(new A.w.File(["hola"],"x.json"));A.$("importFile").files=dt.files;A.$("importFile").dispatchEvent(new A.w.Event("change"));await A.wait(300);
+    ok("avisa",A.text("toast").includes("no es una copia"));eq("no cambia nada",A.local().length,0);});
+
+  section("app — sin conexión y cerrar la app");
+  {let saved;
+   await T("apuntar sin conexión",{user:"u",store:LOGGED("u"),offline:true},async A=>{
+     await A.wait(100);await A.add("6","Otros","Sin cobertura");eq("se ve",A.items(),["Sin cobertura"]);saved=A.snapshotStore();});
+   await T("…cerrar, volver a abrir con conexión: no se pierde",{user:"u",store:saved},async A=>{
+     await A.wait(300);ok("está en el servidor",Object.values(A.db()).some(d=>d&&d.concepto==="Sin cobertura"));eq("se ve",A.items(),["Sin cobertura"]);});}
+  {let saved;
+   await T("editar sin conexión",{user:"u",store:{...LOGGED("u"),...store([G("s1","Pan",2,"Súper")])},db:docs("u",[G("s1","Pan",2,"Súper")]),offline:true},async A=>{
+     await A.wait(100);await A.edit("Pan",{importe:"9"});saved=A.snapshotStore();});
+   await T("…al volver la edición llega al servidor",{user:"u",store:saved,db:docs("u",[G("s1","Pan",2,"Súper")])},async A=>{
+     await A.wait(300);eq("importe en el servidor",A.db()["users/u/gastos/s1"].importe,9);});}
+  {let saved;
+   await T("borrar sin conexión",{user:"u",store:{...LOGGED("u"),...store([G("s1","Pan",2,"Súper")])},db:docs("u",[G("s1","Pan",2,"Súper")]),offline:true},async A=>{
+     await A.wait(100);await A.remove("Pan");saved=A.snapshotStore();});
+   await T("…al volver se borra del servidor",{user:"u",store:saved,db:docs("u",[G("s1","Pan",2,"Súper")])},async A=>{
+     await A.wait(300);ok("borrado",!A.db()["users/u/gastos/s1"]);eq("no se ve",A.items(),[]);});}
+  {let saved;
+   await T("renombrar categoría sin conexión",{user:"u",store:{...LOGGED("u"),...store([G("s1","Pan",2,"Súper")])},db:docs("u",[G("s1","Pan",2,"Súper")]),offline:true},async A=>{
+     await A.wait(100);await A.renameCat("Súper","Super");saved=A.snapshotStore();});
+   await T("…al volver el gasto tiene la categoría nueva",{user:"u",store:saved,db:docs("u",[G("s1","Pan",2,"Súper")])},async A=>{
+     await A.wait(300);eq("en el servidor",A.db()["users/u/gastos/s1"].categoria,"Super");});}
+  await T("con conexión no se queda nada pendiente",{user:"u",store:LOGGED("u")},async A=>{
+    await A.wait(100);await A.add("1","Otros","a");await A.add("2","Otros","b");await A.edit("a",{importe:"3"});await A.wait(150);
+    eq("pendientes",A.json("mis-gastos-pending"),[]);eq("2 en el servidor",Object.keys(A.db()).filter(k=>k.startsWith("users/u/gastos/")).length,2);});
+
+  section("app — con sesión (Firebase simulado)");
+  await T("carga los gastos del servidor",{user:"u",store:LOGGED("u"),db:docs("u",[G("s1","Pan",2,"Súper"),G("s2","Bus",1,"Transporte")])},async A=>{
+    await A.wait(150);eq("2 gastos",A.items().length,2);ok("botón Cambiar de cuenta",A.$("logoutBtn").style.display!=="none");});
+  await T("añadir con sesión va al servidor",{user:"u",store:LOGGED("u")},async A=>{
+    await A.wait(100);await A.add("4","Otros","Nube");const s=Object.entries(A.db()).filter(([k])=>k.startsWith("users/u/gastos/"));
+    eq("1 en el servidor",s.length,1);eq("datos",[s[0][1].concepto,s[0][1].importe],["Nube",4]);eq("sin pendientes",A.json("mis-gastos-pending"),[]);});
+  await T("editar con sesión",{user:"u",store:LOGGED("u"),db:docs("u",[G("s1","Pan",2,"Súper",TODAY,777)])},async A=>{
+    await A.wait(150);await A.edit("Pan",{importe:"3"});const d=A.db()["users/u/gastos/s1"];eq("importe",d.importe,3);eq("hora",d.ts,777);});
+  await T("borrar con sesión",{user:"u",store:LOGGED("u"),db:docs("u",[G("s1","Pan",2,"Súper")])},async A=>{
+    await A.wait(150);await A.remove("Pan");await A.wait(200);ok("fuera del servidor",!A.db()["users/u/gastos/s1"]);});
+  await T("gasto del atajo (fecha con hora)",{user:"u",store:LOGGED("u"),db:{...docs("u",[G("s1","Antes",1,"Otros",TODAY,new Date().setHours(0,1))]),
+      ["users/u/gastos/sc"]:{concepto:"Atajo",importe:5,categoria:"Otros",fecha:TODAY+"T23:59:00 "}}},async A=>{
+    await A.wait(150);eq("el del atajo primero",A.items()[0],"Atajo");ok("fecha correcta (sin Invalid Date)",!A.text("list").includes("Invalid"));});
+  await T("gasto borrado en otro dispositivo no vuelve",{user:"u",store:{...LOGGED("u"),...store([G("s1","Pan",2,"Súper"),G("s2","Borrado",5,"Otros")])},db:docs("u",[G("s1","Pan",2,"Súper")])},async A=>{
+    await A.wait(250);ok("no se re-sube",!A.db()["users/u/gastos/s2"]);eq("no se ve",A.items(),["Pan"]);});
+  await T("borrado en otro dispositivo con la app abierta",{user:"u",store:LOGGED("u"),db:docs("u",[G("s1","Pan",2,"Súper"),G("s2","Bus",1,"Otros")])},async A=>{
+    await A.wait(150);A.srv().del("users/u/gastos/s2");await A.wait(200);eq("desaparece",A.items(),["Pan"]);ok("no vuelve",!A.db()["users/u/gastos/s2"]);});
+  await T("añadido en otro dispositivo aparece solo",{user:"u",store:LOGGED("u")},async A=>{
+    await A.wait(150);A.srv().set("users/u/gastos/n1",{concepto:"Del PC",importe:9,categoria:"Otros",fecha:TODAY,ts:1});await A.wait(200);eq("aparece",A.items(),["Del PC"]);});
+  await T("gasto hecho sin sesión se sube al entrar",{user:"u",store:{...store([G("g1","Local",3,"Otros")]),"mis-gastos-pending":'["g1"]'}},async A=>{
+    await A.wait(250);ok("subido",!!A.db()["users/u/gastos/g1"]);eq("pendientes vacíos",A.json("mis-gastos-pending"),[]);eq("se ve",A.items(),["Local"]);});
+  await T("pendiente inválido no bloquea al resto",{user:"u",store:{...store([G("g1","Bueno",3,"Otros"),G("g2","Malo",0,"Otros")]),"mis-gastos-pending":'["g1","g2"]'}},async A=>{
+    await A.wait(250);ok("el bueno se sube",!!A.db()["users/u/gastos/g1"]);ok("el malo no",!A.db()["users/u/gastos/g2"]);});
+  await T("caché vieja no provoca subidas",{user:"u",store:{...LOGGED("u"),...store([G("v","Viejo",1,"Otros")])},cache:[]},async A=>{
+    await A.wait(250);ok("no sube",!A.db()["users/u/gastos/v"]);});
+  await T("renombrar categoría con sesión",{user:"u",store:LOGGED("u"),db:docs("u",[G("s1","Pan",2,"Súper")])},async A=>{
+    await A.wait(150);await A.renameCat("Súper","Super");await A.wait(150);eq("en el servidor",A.db()["users/u/gastos/s1"].categoria,"Super");
+    ok("categorías en la nube",A.db()["users/u"].catsText.split("\n").includes("Super"));});
+  await T("las categorías se suben la primera vez",{user:"u",store:{...LOGGED("u"),"mis-gastos-cats":JSON.stringify([["Uno","--c1"],["Dos","--c2"]])}},async A=>{
+    await A.wait(200);eq("catsText",A.db()["users/u"]&&A.db()["users/u"].catsText,"Uno\nDos");eq("cats",A.db()["users/u"].cats,[{n:"Uno",c:"--c1"},{n:"Dos",c:"--c2"}]);});
+  await T("móvil nuevo recibe las categorías de la nube",{user:"u",store:LOGGED("u"),db:{"users/u":{cats:[{n:"Belleza",c:"--c9"}],catsText:"Belleza"}}},async A=>{
+    await A.wait(200);eq("chips",[...A.d.querySelectorAll("#chips .chip")].map(c=>c.textContent),["Belleza"]);});
+  await T("categoría creada en otro dispositivo llega sola",{user:"u",store:LOGGED("u")},async A=>{
+    await A.wait(200);A.srv().set("users/u",{cats:[{n:"Nueva",c:"--c1"}],catsText:"Nueva"});await A.wait(200);eq("chips",[...A.d.querySelectorAll("#chips .chip")].map(c=>c.textContent),["Nueva"]);});
+  await T("cambiar de cuenta no arrastra nada",{user:"nueva",store:{...store([G("a","De la otra",9,"Secreta")]),"mis-gastos-uid":"vieja","mis-gastos-cats":JSON.stringify([["Secreta","--c1"]])}},async A=>{
+    await A.wait(250);eq("sin gastos de la otra cuenta",A.items(),[]);ok("sin categorías de la otra cuenta",!A.db()["users/nueva"].catsText.includes("Secreta"));});
+  await T("importar con sesión sube al servidor",{user:"u",store:LOGGED("u")},async A=>{
+    await A.wait(150);await A.importFile([{concepto:"I1",importe:1,categoria:"Otros",fecha:TODAY}]);
+    ok("en el servidor",Object.values(A.db()).some(d=>d.concepto==="I1"));});
+  await T("restaurar un gasto recién borrado",{user:"u",store:LOGGED("u"),db:docs("u",[G("k","Kebab",8,"Otros")])},async A=>{
+    await A.wait(150);await A.remove("Kebab");await A.importFile([G("k","Kebab",8,"Otros")]);await A.wait(200);
+    eq("vuelve a verse",A.items(),["Kebab"]);ok("y está en el servidor",!!A.db()["users/u/gastos/k"]);});
+}
+</script>
+<script>
+// Las funciones vienen de utils.js: el mismo código que usa la app
+let CATS=DEFAULT_CATS.map(c=>[...c]);
 const color=n=>{const c=CATS.find(x=>x[0]===n);return `var(${c?c[1]:"--c8"})`;};
-const norm=s=>s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"");
-const shiftMonth=(ym,d)=>{let [y,m]=ym.split("-").map(Number);m+=d;while(m<1){m+=12;y--}while(m>12){m-=12;y++}return `${y}-${pad(m)}`};
-const monthName=ym=>{const [y,m]=ym.split("-").map(Number);return new Date(y,m-1,1).toLocaleDateString("es-ES",{month:"long",year:"numeric"})};
-const pendingItems=(localGastos,serverIds)=>localGastos.filter(g=>g.id&&!serverIds.has(g.id));
 
 // ── runner ───────────────────────────────────────────────────────────────────
 let pass=0,fail=0;
@@ -53,12 +364,16 @@ eq("con espacios",           parseAmt(" 5 "),        5);
 eq("vacío → NaN",            isNaN(parseAmt("")),   true);
 eq("texto → NaN",            isNaN(parseAmt("abc")),true);
 eq("redondeo a 2 decimales", parseAmt("1.005"),      1.01);
+eq("miles con punto y coma", parseAmt("12.345,67"),  12345.67);
+eq("miles (formato de la app)", parseAmt(eur(12345)), 12345);
+eq("campo editable sin miles", eurInput(12345),     "12345,00");
+eq("ida y vuelta al editar", parseAmt(eurInput(98765.4)), 98765.4);
 
 // ── eur (formato es-ES) ─────────────────────────────────────────────────────
 section("eur");
 eq("entero",      eur(10),      "10,00");
 eq("decimales",   eur(3.5),     "3,50");
-eq("miles",       eur(1000),    "1.000,00");
+eq("miles",       eur(10000),   "10.000,00");
 eq("dos decimales exactos", eur(9.99), "9,99");
 
 // ── norm (tildes) ────────────────────────────────────────────────────────────
@@ -85,25 +400,90 @@ eq("categoría conocida",   color("Comida fuera"),  "var(--c1)");
 eq("categoría desconocida",color("Inexistente"),   "var(--c8)");
 eq("Súper",                color("Súper"),         "var(--c3)");
 
-// ── offline sync: pendingItems ───────────────────────────────────────────────
-section("offline sync — pendingItems");
-const local=[{id:"a1",concepto:"Café",importe:1.5},{id:"b2",concepto:"Bus",importe:2},{id:"c3",concepto:"Mercadona",importe:30}];
-const serverIds=new Set(["a1","b2"]);
-eq("detecta 1 pendiente",   pendingItems(local,serverIds).length,             1);
-eq("pendiente correcto",    pendingItems(local,serverIds)[0].id,              "c3");
-eq("sin pendientes",        pendingItems(local,new Set(["a1","b2","c3"])).length, 0);
-eq("todos pendientes",      pendingItems(local,new Set()).length,              3);
-eq("item sin id ignorado",  pendingItems([{concepto:"x",importe:1}],new Set()).length, 0);
+// ── fixGasto (fechas del atajo) ─────────────────────────────────────────────
+section("fixGasto");
+eq("fecha con hora → día",     fixGasto({fecha:"2026-10-30T20:32:10"}).fecha, "2026-10-30");
+eq("hora → ts",                new Date(fixGasto({fecha:"2026-10-30T20:32:10"}).ts).getHours(), 20);
+eq("espacio al final",         new Date(fixGasto({fecha:"2026-10-30T20:32:10 "}).ts).getMinutes(), 32);
+eq("sin hora: sin ts",         fixGasto({fecha:"2026-10-30"}).ts, undefined);
+eq("no pisa un ts existente",  fixGasto({fecha:"2026-10-30T20:32:10",ts:5}).ts, 5);
+
+// ── validCats ───────────────────────────────────────────────────────────────
+section("validCats");
+ok("las de serie",             validCats(DEFAULT_CATS));
+ok("objeto → no",              !validCats({a:1}));
+ok("lista vacía → no",         !validCats([]));
+ok("nombre vacío → no",        !validCats([["  ","--c1"]]));
+
+// ── lastCatFor (categoría automática) ───────────────────────────────────────
+section("lastCatFor");
+const hist=[{concepto:"Mercadona",categoria:"Otros",fecha:"2025-01-01",ts:1},
+            {concepto:"mercadona",categoria:"Súper",fecha:"2026-10-20",ts:2},
+            {concepto:"Bus",categoria:"Transporte",fecha:"2026-10-01",ts:3}];
+eq("el más reciente gana",     lastCatFor(hist,"Mercadona"), "Súper");
+eq("ignora tildes/mayúsculas", lastCatFor(hist,"MERCADONA "), "Súper");
+eq("sin coincidencia",         lastCatFor(hist,"Kebab"), null);
+eq("vacío",                    lastCatFor(hist,""), null);
+
+// ── monthsElapsed (media anual) ─────────────────────────────────────────────
+section("monthsElapsed");
+const oct=new Date(2026,9,31);
+eq("año en curso (octubre)",   monthsElapsed(2026,oct), 10);
+eq("año pasado",               monthsElapsed(2025,oct), 12);
+eq("enero",                    monthsElapsed(2027,new Date(2027,0,5)), 1);
+
+// ── validGasto (mismas reglas que Firestore) ───────────────────────────────
+section("validGasto");
+const gOK={concepto:"Pan",importe:2,categoria:"Súper",fecha:"2026-10-30",ts:1};
+ok("gasto normal",                 validGasto(gOK));
+ok("fecha con hora (atajo)",       validGasto({...gOK,fecha:"2026-10-30T20:32:10 "}));
+ok("sin concepto",                 validGasto({importe:2,categoria:"Súper",fecha:"2026-10-30"}));
+ok("importe 0 → no",               !validGasto({...gOK,importe:0}));
+ok("importe negativo → no",        !validGasto({...gOK,importe:-5}));
+ok("importe texto → no",           !validGasto({...gOK,importe:"5"}));
+ok("importe 1.000.000 → no",       !validGasto({...gOK,importe:1000000}));
+ok("importe 999.999,99 → sí",      validGasto({...gOK,importe:999999.99}));
+ok("sin categoría → no",           !validGasto({...gOK,categoria:" "}));
+ok("categoría de 61 → no",         !validGasto({...gOK,categoria:"x".repeat(61)}));
+ok("concepto de 201 → no",         !validGasto({...gOK,concepto:"x".repeat(201)}));
+ok("fecha rara → no",              !validGasto({...gOK,fecha:"ayer"}));
+ok("ts texto → no",                !validGasto({...gOK,ts:"1"}));
+
+// ── parseShortcut (atajo por dirección) ────────────────────────────────────
+section("parseShortcut");
+const scG=[{concepto:"Kebab",categoria:"Comida fuera",fecha:"2026-10-01",ts:1}];
+eq("sin datos → null",             parseShortcut("",DEFAULT_CATS,[]), null);
+eq("completo",                     parseShortcut("?importe=12,50&concepto=Pan&cat=S%C3%BAper",DEFAULT_CATS,[]),{importe:12.5,concepto:"Pan",cat:"Súper",confirmar:false});
+eq("categoría sin tilde",          parseShortcut("?importe=1&cat=super",DEFAULT_CATS,[]).cat, "Súper");
+eq("categoría por el principio",   parseShortcut("?importe=1&cat=comida",DEFAULT_CATS,[]).cat, "Comida fuera");
+eq("categoría inexistente",        parseShortcut("?importe=1&cat=zzz",DEFAULT_CATS,[]).cat, null);
+eq("categoría por el concepto",    parseShortcut("?importe=1&concepto=kebab",DEFAULT_CATS,scG).cat, "Comida fuera");
+eq("importe con miles",            parseShortcut("?importe=1.234,50",DEFAULT_CATS,[]).importe, 1234.5);
+eq("importe con punto",            parseShortcut("?importe=3.5",DEFAULT_CATS,[]).importe, 3.5);
+ok("importe inválido → NaN",       isNaN(parseShortcut("?importe=abc",DEFAULT_CATS,[]).importe));
+eq("confirmar=1",                  parseShortcut("?importe=1&confirmar=1",DEFAULT_CATS,[]).confirmar, true);
+eq("concepto recortado a 200",     parseShortcut("?concepto="+"x".repeat(300),DEFAULT_CATS,[]).concepto.length, 200);
+
+// ── uniqueName / dedupeCats ────────────────────────────────────────────────
+section("uniqueName / dedupeCats");
+eq("libre",                        uniqueName("Nueva",["A"]), "Nueva");
+eq("ocupado → 2",                  uniqueName("Nueva",["Nueva"]), "Nueva 2");
+eq("ocupados 1 y 2 → 3",           uniqueName("Nueva",["Nueva","Nueva 2"]), "Nueva 3");
+eq("color de la paleta",           safeColor("--c3"), "--c3");
+eq("color manipulado → neutro",    safeColor('--c1)"><img>'), "--c8");
+eq("quita repetidas",              dedupeCats([["A","--c1"],["B","--c2"],["A","--c3"]]), [["A","--c1"],["B","--c2"]]);
 
 // ── monthName (muestra, no falla) ─────────────────────────────────────────
 section("monthName");
 ok("octubre 2026", monthName("2026-10").toLowerCase().includes("octubre"));
 ok("enero 2027",   monthName("2027-01").toLowerCase().includes("enero"));
 
-// ── resumen ──────────────────────────────────────────────────────────────────
-const s=document.getElementById("summary");
-s.textContent=`${pass+fail} tests: ${pass} pasados, ${fail} fallados`;
-s.style.color=fail===0?"#4caf50":"#f44336";
+// ── pruebas de la app completa ─────────────────────────────────────────────
+runAppTests().catch(e=>{fail++;const d=document.createElement("div");d.className="fail";d.textContent="✗ error en las pruebas: "+e;out.appendChild(d)}).finally(()=>{
+  const s=document.getElementById("summary");
+  s.textContent=`${pass+fail} tests: ${pass} pasados, ${fail} fallados`;
+  s.style.color=fail===0?"#4caf50":"#f44336";
+});
 </script>
 </body>
 </html>
